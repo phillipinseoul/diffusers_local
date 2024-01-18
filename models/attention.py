@@ -69,8 +69,10 @@ class GatedSelfAttentionDense(nn.Module):
         # we need a linear projection since we need cat visual feature and obj feature
         self.linear = nn.Linear(context_dim, query_dim)
 
-        self.attn = Attention(query_dim=query_dim, heads=n_heads, dim_head=d_head,
-                              is_gated_self_attention=True)
+        self.attn = Attention(
+            query_dim=query_dim, heads=n_heads, dim_head=d_head,
+            is_gated_self_attention=True,   # ADD: for gated self-attention
+        )
         
         self.ff = FeedForward(query_dim, activation_fn="geglu")
 
@@ -82,57 +84,60 @@ class GatedSelfAttentionDense(nn.Module):
 
         self.enabled = True
 
-    def forward(self, x: torch.Tensor, objs: torch.Tensor) -> torch.Tensor:
+        # ADD: for debugging
+        self.name = None
+        self.alpha_attn_save_path = None
+        self.alpha_dense_save_path = None
+        self.current_timestep = None
+
+    def forward(
+            self, 
+            x: torch.Tensor,
+            objs: torch.Tensor
+        ) -> torch.Tensor:
         if not self.enabled:
             return x
 
-        # print("GatedSelfAttentionDense()")
-
         n_visual = x.shape[1]
         objs = self.linear(objs)
-
-        print(f"GatedSelfAttentionDense(): x.shape: {x.shape}")
         
         '''
         x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
         '''
 
-        print(f"objs.shape: {objs.shape}")
-
         ###### Modified by Yuseung Lee (for understanding) ######
         # 1. concat visual token and grounding token
+        # print(f"x.shape: {x.shape} / objs.shape: {objs.shape}")
+
         concat_tokens = torch.cat([x, objs], dim=1)
 
         # 2. Layer Normalization
         concat_tokens = self.norm1(concat_tokens)
 
         # 3. Self-Attention
-        attn_output = self.attn(concat_tokens)
+        attn_output = self.attn(
+            concat_tokens,
+            current_timestep = self.current_timestep,  # ADD: for visualization
+            gsa_layer_name = self.name,              # ADD: for visualization
+            )
 
         # 4. Split visual token and grounding token
         attn_output_visual = attn_output[:, :n_visual, :]
 
-        '''
         # 5. Add residual
         x = x + self.alpha_attn.tanh() * attn_output_visual
 
         # 6. Feed Forward
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
-        '''
 
-        # ADD: hyperparameter for controlling the effect of GSA
-        alpha_attn_weight = 1.0
-        alpha_dense_weight = 1.0
-
-        # 5. Add residual
-        x = x + alpha_attn_weight * self.alpha_attn.tanh() * attn_output_visual
-
-        # 6. Feed Forward
-        x = x + alpha_dense_weight * self.alpha_dense.tanh() * self.ff(self.norm2(x))
-
-        # print(f"self.alpha_attn.tanh(): {self.alpha_attn.tanh()}")
-        # print(f"self.alpha_dense.tanh(): {self.alpha_dense.tanh()}")
+        # ADD: save alpha_attn and alpha_dense
+        # if self.name is not None:
+        #     with open(self.alpha_attn_save_path, "a") as f:
+        #         f.write(f"[{self.name}] {self.alpha_attn.item()}\n")
+            
+        #     with open(self.alpha_dense_save_path, "a") as f:
+        #         f.write(f"[{self.name}] {self.alpha_dense.item()}\n")
 
         return x
 
@@ -387,7 +392,10 @@ class BasicTransformerBlock(nn.Module):
 
         # 2.5 GLIGEN Control
         if gligen_kwargs is not None:
-            hidden_states = self.fuser(hidden_states, gligen_kwargs["objs"])
+            hidden_states = self.fuser(
+                hidden_states,
+                gligen_kwargs["objs"]    
+            )
 
         # 3. Cross-Attention
         if self.attn2 is not None:

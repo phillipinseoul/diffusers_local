@@ -11,9 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+from os.path import join
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from PIL import Image, ImageDraw
 from importlib import import_module
 from typing import Callable, Optional, Union
-
+import math
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -25,6 +31,18 @@ from .lora import LoRACompatibleLinear, LoRALinearLayer
 
 
 logger = logging.get_logger(__name__)  # pylint: disable=invalid-name
+
+############################ ADD: helper functions for gated self-attention (by Yuseung Lee) ############################
+def add_bboxes(img, bboxes, color=(255, 0, 0), width=2):
+    draw = ImageDraw.Draw(img)
+    for box in bboxes:
+        box_coord = [
+            box[0] * img.size[0], box[1] * img.size[1],
+            box[2] * img.size[0] ,box[3] * img.size[1],
+        ]
+        draw.rectangle(box_coord, outline="red", width=width)
+    return img
+############################ ADD: helper functions for gated self-attention (by Yuseung Lee) ############################
 
 
 if is_xformers_available():
@@ -505,6 +523,8 @@ class Attention(nn.Module):
         hidden_states: torch.FloatTensor,
         encoder_hidden_states: Optional[torch.FloatTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
+        current_timestep: Optional[int] = None,     # ADD: for gated self-attention (by Yuseung Lee)
+        gsa_layer_name: Optional[str] = None,       # ADD: for gated self-attention (by Yuseung Lee)
         **cross_attention_kwargs,
     ) -> torch.Tensor:
         r"""
@@ -533,6 +553,8 @@ class Attention(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
             is_gated_self_attention=self.is_gated_self_attention,      # ADD: gated self-attention (by Yuseung Lee)
+            current_timestep=current_timestep,                         # ADD: gated self-attention (by Yuseung Lee)
+            gsa_layer_name=gsa_layer_name,                             # ADD: gated self-attention (by Yuseung Lee)
             **cross_attention_kwargs,
         )
 
@@ -778,19 +800,12 @@ class AttnProcessor:
 
         attention_probs = attn.get_attention_scores(query, key, attention_mask)
 
-        ### Modified by Yuseung Lee ###
-        # print(f"[AttnProcessor] attention_probs: {attention_probs.shape} / max={attention_probs.max()} / min={attention_probs.min()}")
-        # print("HERE - AttnProcessor")
-
-        # if is_gated_self_attention:
-        #     print(f"[AttnProcessor] attention_probs: {attention_probs.shape} / max={attention_probs.max()} / min={attention_probs.min()}")
-        ### Modified by Yuseung Lee ###
-
         hidden_states = torch.bmm(attention_probs, value)
         hidden_states = attn.batch_to_head_dim(hidden_states)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states, *args)
+        
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
@@ -1226,9 +1241,9 @@ class AttnProcessor2_0:
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
         is_gated_self_attention: bool = False,      # ADD: gated self-attention (by Yuseung Lee)
+        current_timestep: Optional[int] = None,     # ADD: gated self-attention (by Yuseung Lee)
+        gsa_layer_name: Optional[str] = None,       # ADD: gated self-attention (by Yuseung Lee)
     ) -> torch.FloatTensor:
-        # print("HERE - AttnProcessor2_0")
-
         residual = hidden_states
         if attn.spatial_norm is not None:
             hidden_states = attn.spatial_norm(hidden_states, temb)
@@ -1272,12 +1287,69 @@ class AttnProcessor2_0:
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
+
+        ############################ Modified by Yuseung Lee ############################
+        # from https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+        # Efficient implementation equivalent to the following:
+        
+        save_attn_maps = True
+
+        if is_gated_self_attention and save_attn_maps:
+            # SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/attention_map"
+            SAVE_DIR = "/scratch/yuseung07/attention_map"
+            os.makedirs(SAVE_DIR, exist_ok=True)
+
+            N_GROUND_TOKENS = 30            # number of grounding tokens (padded)
+            N_GROUND_TOKENS_VALID = 2       # actual number of bboxes
+            
+            assert attention_mask is None
+            assert current_timestep is not None
+
+            L, S = query.size(-2), key.size(-2)
+            scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+            attn_bias = torch.zeros(L, S, dtype=query.dtype).to(query.device)
+            
+            attn_weight = query @ key.transpose(-2, -1) * scale_factor
+            attn_weight += attn_bias
+            attn_weight = torch.softmax(attn_weight, dim=-1)
+
+            # NOTE: fix num. of grounding tokens to 30
+            n_visual_tokens = attn_weight.shape[-1] - N_GROUND_TOKENS
+
+            # TODO: get bounding boxes as an input!
+            boxes = [
+                [0.1387, 0.2051, 0.4277, 0.7090], 
+                [0.4980, 0.4355, 0.8516, 0.7266]
+            ]
+            
+            for idx in range(N_GROUND_TOKENS_VALID):
+                attn_map = attn_weight[:, :, :, n_visual_tokens + idx]     # (batch, num_heads, seq_len)
+                attn_map = attn_map[:, :, :n_visual_tokens]             # (batch, num_heads, num_visual_tokens)
+
+                B, N_HEADS, _ = attn_map.shape
+                n_visual_tokens_row = int(math.sqrt(n_visual_tokens))
+                
+                attn_map = attn_map.reshape(B, N_HEADS, n_visual_tokens_row, n_visual_tokens_row)
+                attn_map = torch.mean(attn_map, dim=1, keepdim=True)                                # (batch, num_visual_tokens, num_visual_tokens)
+                attn_map = attn_map.repeat(1, 3, 1, 1)                                              # (batch, 3, num_visual_tokens, num_visual_tokens)
+                attn_map = attn_map[1]
+
+                # save attention map
+                attn_map = attn_map.permute(1, 2, 0).cpu().detach().numpy()
+                # attn_map = attn_map / attn_map.max()
+                attn_map = attn_map * 255.0
+                attn_map = attn_map.astype(np.uint8)
+                attn_map = Image.fromarray(attn_map).resize((512, 512), Image.NEAREST)
+                attn_map = add_bboxes(attn_map, boxes, color=(255, 0, 0), width=2)
+                attn_map.save(join(SAVE_DIR, f"attn_map_layer_{gsa_layer_name}_token_{idx:02d}_iter_{current_timestep}.png"))
+
+        ############################ Modified by Yuseung Lee ############################
+
         # TODO: add support for attn.scale when we move to Torch 2.1
         hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            query, key, value, 
+            attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
-
-        # print(f"[AttnProcessor2_0] hidden_states: {hidden_states.shape}")
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)

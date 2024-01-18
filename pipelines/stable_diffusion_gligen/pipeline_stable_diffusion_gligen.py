@@ -18,6 +18,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 import PIL.Image
 import torch
+import torchvision.transforms as T
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 from ...image_processor import VaeImageProcessor
@@ -520,11 +521,83 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents
-
-    def enable_fuser(self, enabled=True):
+    
+    def set_fuser_current_timestep(self, current_timestep):
+        '''
+        ADD: for GSA map visualization
+        '''
         for module in self.unet.modules():
             if type(module) is GatedSelfAttentionDense:
-                module.enabled = enabled
+                module.current_timestep = current_timestep
+
+    def enable_fuser(
+            self, 
+            # enabled = True,
+            enable_down_blocks = [0, 1, 2],      # ADD: enable specific unet blocks/layers
+            enable_mid_block = True,             # down_blocks: 3 layers, mid_block: 1 layer, up_blocks: 3 layers
+            enable_up_blocks = [1, 2, 3],
+            alpha_attn_save_path = None,         # ADD: save alpha_attn to path
+            alpha_dense_save_path = None,        # ADD: save alpha_dense to path
+        ):
+        # Enable GSA() in down_blocks
+        for i in range(len(self.unet.down_blocks)):
+            for module in self.unet.down_blocks[i].modules():
+                if module._get_name() == "GatedSelfAttentionDense":
+                    # ADD: add name 
+                    module.name = "down_" + str(i)
+
+                    # ADD: add save path
+                    module.alpha_attn_save_path = alpha_attn_save_path
+                    module.alpha_dense_save_path = alpha_dense_save_path
+
+                    # ADD: enable GSA
+                    if i in enable_down_blocks:
+                        module.enabled = True
+                    else:
+                        module.enabled = False
+            
+        # for module in self.unet.down_blocks.modules():
+        #     if module._get_name() == "GatedSelfAttentionDense":
+        #         module.enabled = enable_down_blocks
+
+        # Enable GSA() in mid_block
+        for module in self.unet.mid_block.modules():
+            if module._get_name() == "GatedSelfAttentionDense":
+                # ADD: add name 
+                module.name = "mid"
+
+                # ADD: add save path
+                module.alpha_attn_save_path = alpha_attn_save_path
+                module.alpha_dense_save_path = alpha_dense_save_path
+
+                # ADD: enable GSA
+                module.enabled = enable_mid_block
+
+        # Enable GSA() in up_blocks
+        for i in range(len(self.unet.up_blocks)):
+            for module in self.unet.up_blocks[i].modules():
+                if module._get_name() == "GatedSelfAttentionDense":
+                    # ADD: add name 
+                    module.name = "up_" + str(i)
+
+                    # ADD: add save path
+                    module.alpha_attn_save_path = alpha_attn_save_path
+                    module.alpha_dense_save_path = alpha_dense_save_path
+
+                    # ADD: enable GSA
+                    if i in enable_up_blocks:
+                        module.enabled = True
+                    else:
+                        module.enabled = False
+        
+        # for module in self.unet.up_blocks.modules():
+        #     if module._get_name() == "GatedSelfAttentionDense":
+        #         module.enabled = enable_up_blocks
+
+        # for module in self.unet.modules():
+        #     if type(module) is GatedSelfAttentionDense:
+        #         module.enabled = enabled
+
 
     def draw_inpaint_mask_from_boxes(self, boxes, size):
         inpaint_mask = torch.ones(size[0], size[1])
@@ -574,6 +647,10 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         callback_steps: int = 1,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         clip_skip: Optional[int] = None,
+        enable_down_blocks: List[int] = [0, 1, 2],      # ADD: enable specific unet blocks/layers (by Yuseung)
+        enable_mid_block: bool = True,
+        enable_up_blocks: List[int] = [1, 2, 3],
+        return_x0_predictions: bool = False,                          # ADD: return x0 predictions
     ):
         r"""
         The call function to the pipeline for generation.
@@ -730,13 +807,16 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             )
             gligen_phrases = gligen_phrases[:max_objs]
             gligen_boxes = gligen_boxes[:max_objs]
+        
         # prepare batched input to the PositionNet (boxes, phrases, mask)
         # Get tokens for phrases from pre-trained CLIPTokenizer
         tokenizer_inputs = self.tokenizer(gligen_phrases, padding=True, return_tensors="pt").to(device)
+        
         # For the token, we use the same pre-trained text encoder
         # to obtain its text feature
         _text_embeddings = self.text_encoder(**tokenizer_inputs).pooler_output
         n_objs = len(gligen_boxes)
+
         # For each entity, described in phrases, is denoted with a bounding box,
         # we represent the location information as (xmin,ymin,xmax,ymax)
         boxes = torch.zeros(max_objs, 4, device=device, dtype=self.text_encoder.dtype)
@@ -745,6 +825,7 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             max_objs, self.unet.cross_attention_dim, device=device, dtype=self.text_encoder.dtype
         )
         text_embeddings[:n_objs] = _text_embeddings
+        
         # Generate a mask for each object that is entity described by phrases
         masks = torch.zeros(max_objs, device=device, dtype=self.text_encoder.dtype)
         masks[:n_objs] = 1
@@ -753,15 +834,22 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         boxes = boxes.unsqueeze(0).expand(repeat_batch, -1, -1).clone()
         text_embeddings = text_embeddings.unsqueeze(0).expand(repeat_batch, -1, -1).clone()
         masks = masks.unsqueeze(0).expand(repeat_batch, -1).clone()
+        
         if do_classifier_free_guidance:
             repeat_batch = repeat_batch * 2
             boxes = torch.cat([boxes] * 2)
             text_embeddings = torch.cat([text_embeddings] * 2)
             masks = torch.cat([masks] * 2)
             masks[: repeat_batch // 2] = 0
+        
         if cross_attention_kwargs is None:
             cross_attention_kwargs = {}
-        cross_attention_kwargs["gligen"] = {"boxes": boxes, "positive_embeddings": text_embeddings, "masks": masks}
+        
+        cross_attention_kwargs["gligen"] = {
+            "boxes": boxes, 
+            "positive_embeddings": text_embeddings, 
+            "masks": masks
+        }
 
         # Prepare latent variables for GLIGEN inpainting
         if gligen_inpaint_image is not None:
@@ -793,15 +881,30 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             gligen_inpaint_mask_addition = gligen_inpaint_mask_addition.expand(repeat_batch, -1, -1, -1).clone()
 
         num_grounding_steps = int(gligen_scheduled_sampling_beta * len(timesteps))
-        self.enable_fuser(True)
+
+        # ADD: enable specific unet blocks
+        # self.enable_fuser(True)
+        self.enable_fuser(
+            enable_down_blocks = enable_down_blocks,
+            enable_mid_block = enable_mid_block,
+            enable_up_blocks = enable_up_blocks,
+            # alpha_attn_save_path = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/alpha_statistics/alpha_attn.txt",
+            # alpha_dense_save_path = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/alpha_statistics/alpha_dense.txt",
+        )
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
+
+        x0_predictions = []
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                # ADD: for attention map visualization (by Yuseung)
+                # print(f"set current timestep: {i}")
+                self.set_fuser_current_timestep(i)
+
                 # Scheduled sampling
                 if i == num_grounding_steps:
                     self.enable_fuser(False)
@@ -842,7 +945,17 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                # latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs).prev_sample
+                
+                out = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs)
+                latents = out.prev_sample
+
+                # ADD: return x0 predictions
+                x0_prediction = out.pred_original_sample        # (B, 4, 64, 64)
+
+                # ADD: save x0 predictions
+                # x0_predictions.append(x0_prediction.detach().cpu().numpy())
+                x0_predictions.append(x0_prediction.detach().cpu())
 
                 # call the callback, if provided
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0):
@@ -870,5 +983,20 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
 
         if not return_dict:
             return (image, has_nsfw_concept)
+        
+        # ADD: decode x0 predictions
+        x0_predictions_pil = []
+        for i in range(len(x0_predictions)):
+            x0_predictions_i = x0_predictions[i].to(self.vae.device)
+            x0_decoded = self.vae.decode(x0_predictions_i / self.vae.config.scaling_factor, return_dict=False)[0]
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+            x0_decoded = x0_decoded.detach().cpu()
+            x0_decoded = (x0_decoded + 1.0) / 2.0
+            x0_decoded = x0_decoded.clamp(0.0, 1.0)
+            x0_decoded = T.ToPILImage()(x0_decoded[0])
+            x0_predictions_pil.append(x0_decoded)
+
+        if return_x0_predictions:
+            return (StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), x0_predictions_pil)
+        else:
+            return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)

@@ -66,6 +66,7 @@ def get_down_block(
         attention_head_dim = num_attention_heads
 
     down_block_type = down_block_type[7:] if down_block_type.startswith("UNetRes") else down_block_type
+    
     if down_block_type == "DownBlock2D":
         return DownBlock2D(
             num_layers=num_layers,

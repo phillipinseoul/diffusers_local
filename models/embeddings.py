@@ -708,7 +708,11 @@ class PositionNet(nn.Module):
             # replace padding with learnable null embedding
             positive_embeddings = positive_embeddings * masks + (1 - masks) * positive_null
 
-            objs = self.linears(torch.cat([positive_embeddings, xyxy_embedding], dim=-1))
+            # obtain grounding tokens
+            objs = self.linears(torch.cat([
+                positive_embeddings,
+                xyxy_embedding
+            ], dim=-1))
 
         # positionet with text and image infomation
         else:

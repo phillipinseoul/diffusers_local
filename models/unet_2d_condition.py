@@ -615,8 +615,11 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 positive_len = cross_attention_dim[0]
 
             feature_type = "text-only" if attention_type == "gated" else "text-image"
+            
             self.position_net = PositionNet(
-                positive_len=positive_len, out_dim=cross_attention_dim, feature_type=feature_type
+                positive_len=positive_len, 
+                out_dim=cross_attention_dim, 
+                feature_type=feature_type
             )
 
     @property
@@ -1102,6 +1105,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             is_adapter = True
 
         down_block_res_samples = (sample,)
+
         for downsample_block in self.down_blocks:
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 # For t2i-adapter CrossAttnDownBlock2D
