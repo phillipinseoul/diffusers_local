@@ -98,12 +98,16 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         norm_eps: float = 1e-5,
         attention_type: str = "default",
         caption_channels: int = None,
+        layer_name: Optional[str] = None,        # ADD: layer_name of each layer
     ):
         super().__init__()
         self.use_linear_projection = use_linear_projection
         self.num_attention_heads = num_attention_heads
         self.attention_head_dim = attention_head_dim
         inner_dim = num_attention_heads * attention_head_dim
+
+        # ADD: layer_name of each layer
+        self.layer_name = layer_name
 
         conv_cls = nn.Conv2d if USE_PEFT_BACKEND else LoRACompatibleConv
         linear_cls = nn.Linear if USE_PEFT_BACKEND else LoRACompatibleLinear
@@ -199,6 +203,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     norm_elementwise_affine=norm_elementwise_affine,
                     norm_eps=norm_eps,
                     attention_type=attention_type,
+                    layer_name=f"{self.layer_name}-{d}",        # ADD: layer_name of each layer
                 )
                 for d in range(num_layers)
             ]
@@ -254,6 +259,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         attention_mask: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        current_iteration: Optional[int] = None,
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -397,6 +403,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     timestep=timestep,
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
+                    current_iteration=current_iteration,
                 )
 
         # 3. Output

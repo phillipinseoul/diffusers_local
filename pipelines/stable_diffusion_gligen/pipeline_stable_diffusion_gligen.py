@@ -631,6 +631,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         gligen_scheduled_sampling_beta: float = 0.3,
+        num_grounding_steps_start: int = 1,
+        num_grounding_steps_end: int = 30,
         gligen_phrases: List[str] = None,
         gligen_boxes: List[List[float]] = None,
         gligen_inpaint_image: Optional[PIL.Image.Image] = None,
@@ -787,6 +789,7 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
 
         # 5. Prepare latent variables
         num_channels_latents = self.unet.in_channels
+
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -899,6 +902,7 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # ADD: for attention map visualization (by Yuseung)
@@ -906,8 +910,23 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                 self.set_fuser_current_timestep(i)
 
                 # Scheduled sampling
-                if i == num_grounding_steps:
-                    self.enable_fuser(False)
+                # if i == num_grounding_steps:
+                if i < num_grounding_steps_start or i > num_grounding_steps_end:
+                    # self.enable_fuser(False)
+                    # print("disable fuser")
+                    self.enable_fuser(
+                        enable_down_blocks = [],
+                        enable_mid_block = False,
+                        enable_up_blocks = [],
+                    )
+                else:
+                    # print("enable fuser")
+                    self.enable_fuser(
+                        enable_down_blocks = enable_down_blocks,
+                        enable_mid_block = enable_mid_block,
+                        enable_up_blocks = enable_up_blocks,
+                    )
+
 
                 if latents.shape[1] != 4:
                     latents = torch.randn_like(latents[:, :4])
@@ -1000,3 +1019,84 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             return (StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), x0_predictions_pil)
         else:
             return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+
+
+    # ADD: for grounding token inversion (by Yuseung Lee)
+    def denoise_single_step(
+        self,
+        latents: torch.FloatTensor,                     # noisy latents
+        prompt_embeds: torch.FloatTensor,               # text embeddings
+        timestep: int,
+        gligen_boxes: torch.FloatTensor,                # ADD: gligen_boxes
+        token_text_embeds: torch.FloatTensor,           # ADD: token_text_embeds
+        guidance_scale: float = 7.5,
+        enable_down_blocks: List[int] = [0, 1, 2],      # ADD: enable specific unet blocks/layers (by Yuseung)
+        enable_mid_block: bool = True,
+        enable_up_blocks: List[int] = [1, 2, 3],
+        device: str = "cuda",
+        batch_size: int = 1,
+    ):  
+        # enable GSA
+        self.enable_fuser(
+            enable_down_blocks = enable_down_blocks,
+            enable_mid_block = enable_mid_block,
+            enable_up_blocks = enable_up_blocks,
+        )
+
+        # classifier free guidance
+        latent_model_input = torch.cat([latents] * 2)
+        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep)
+
+        # turn on gradient for boxes
+        n_objs = gligen_boxes.shape[0]
+        # gligen_boxes = gligen_boxes.requires_grad_(True)
+        # print(f"gligen_boxes.shape: {gligen_boxes.shape}")
+
+        # pad the rest of the tokens
+        MAX_OBJS = 30
+        boxes = torch.zeros(
+            (MAX_OBJS, 4), device=device, dtype=self.text_encoder.dtype)
+        boxes[:n_objs] = gligen_boxes
+        boxes = boxes.unsqueeze(0)
+
+        text_embeddings = torch.zeros(
+            (MAX_OBJS, self.unet.cross_attention_dim),
+            device=device, dtype=self.text_encoder.dtype)
+        
+        text_embeddings[:n_objs] = token_text_embeds
+        text_embeddings = text_embeddings.unsqueeze(0)
+
+        # Generate a mask for each object that is entity described by phrases
+        masks = torch.zeros(
+            MAX_OBJS, device=device, dtype=self.text_encoder.dtype)
+        masks[:n_objs] = 1
+        masks = masks.unsqueeze(0)
+
+        # for classifier free guidance, we need to do two forward passes.
+        boxes = torch.cat([boxes] * 2)
+        text_embeddings = torch.cat([text_embeddings] * 2)
+        masks = torch.cat([masks] * 2)
+        masks[:1] = 0
+
+        # if cross_attention_kwargs is None:
+        cross_attention_kwargs = {}
+        
+        cross_attention_kwargs["gligen"] = {
+            "boxes": boxes,                     # TO UPDATE!
+            "positive_embeddings": text_embeddings, 
+            "masks": masks
+        }
+
+        # predict the noise residual
+        noise_pred = self.unet(
+            latent_model_input,
+            timestep,
+            encoder_hidden_states=prompt_embeds,
+            cross_attention_kwargs=cross_attention_kwargs,
+        ).sample
+
+        # perform guidance
+        noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
+        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
+        return noise_pred

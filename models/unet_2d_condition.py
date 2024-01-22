@@ -280,8 +280,12 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         # input
         conv_in_padding = (conv_in_kernel - 1) // 2
+
         self.conv_in = nn.Conv2d(
-            in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding
+            in_channels, 
+            block_out_channels[0], 
+            kernel_size=conv_in_kernel, 
+            padding=conv_in_padding
         )
 
         # time
@@ -444,6 +448,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         # down
         output_channel = block_out_channels[0]
+
+        # print(f"[INFO] down_block_types: {down_block_types}")
+
         for i, down_block_type in enumerate(down_block_types):
             input_channel = output_channel
             output_channel = block_out_channels[i]
@@ -474,6 +481,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 cross_attention_norm=cross_attention_norm,
                 attention_head_dim=attention_head_dim[i] if attention_head_dim[i] is not None else output_channel,
                 dropout=dropout,
+                block_idx=i,
             )
             self.down_blocks.append(down_block)
 
@@ -849,6 +857,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         down_intrablock_additional_residuals: Optional[Tuple[torch.Tensor]] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
+        current_iteration: Optional[int] = None,        # ADD: for debugging (Yuseung)
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1103,10 +1112,22 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             )
             down_intrablock_additional_residuals = down_block_additional_residuals
             is_adapter = True
+        
+        #################################### DOWNSAMPLE BLOCKS (ENCODER) ####################################
+        
+        # ADD: ablation flipping experiment to check where the spatial information emerges
+        FLIP_LAYERS = []
+        FLIP_THRES = 1
+        REFLIP = False # True
 
         down_block_res_samples = (sample,)
 
-        for downsample_block in self.down_blocks:
+        for layer_idx, downsample_block in enumerate(self.down_blocks):
+        # for downsample_block in self.down_blocks:
+            
+            if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES:
+                sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
+
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 # For t2i-adapter CrossAttnDownBlock2D
                 additional_residuals = {}
@@ -1120,10 +1141,22 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
+                    current_iteration=current_iteration,
+                    layer_idx=layer_idx,
                     **additional_residuals,
                 )
+                
+                if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES and REFLIP:
+                    sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
+                    res_samples = tuple(torch.flip(res_sample, dims=[-1]) for res_sample in res_samples)
+                    
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb, scale=lora_scale)
+
+                if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES and REFLIP:
+                    sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
+                    res_samples = tuple(torch.flip(res_sample, dims=[-1]) for res_sample in res_samples)
+
                 if is_adapter and len(down_intrablock_additional_residuals) > 0:
                     sample += down_intrablock_additional_residuals.pop(0)
 
@@ -1139,6 +1172,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                 new_down_block_res_samples = new_down_block_res_samples + (down_block_res_sample,)
 
             down_block_res_samples = new_down_block_res_samples
+        #################################### DOWNSAMPLE BLOCKS (ENCODER) ####################################
+            
+        #################################### MIDDLE BLOCKS ####################################
 
         # 4. mid
         if self.mid_block is not None:
@@ -1164,8 +1200,12 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
 
         if is_controlnet:
             sample = sample + mid_block_additional_residual
+        #################################### MIDDLE BLOCKS ####################################
 
+        #################################### UPSAMPLE BLOCKS (DECODER) ####################################
         # 5. up
+        # print(f"[INFO] num of upsample blocks: {len(self.up_blocks)}")
+
         for i, upsample_block in enumerate(self.up_blocks):
             is_final_block = i == len(self.up_blocks) - 1
 
@@ -1196,6 +1236,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     upsample_size=upsample_size,
                     scale=lora_scale,
                 )
+        #################################### UPSAMPLE BLOCKS (DECODER) ####################################
 
         # 6. post-process
         if self.conv_norm_out:

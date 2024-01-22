@@ -57,6 +57,7 @@ class StableDiffusionSafetyChecker(PreTrainedModel):
 
         result = []
         batch_size = image_embeds.shape[0]
+        
         for i in range(batch_size):
             result_img = {"special_scores": {}, "special_care": [], "concept_scores": {}, "bad_concepts": []}
 
@@ -83,12 +84,15 @@ class StableDiffusionSafetyChecker(PreTrainedModel):
 
         has_nsfw_concepts = [len(res["bad_concepts"]) > 0 for res in result]
 
+        '''
+        # TODO: Turn on again!
         for idx, has_nsfw_concept in enumerate(has_nsfw_concepts):
             if has_nsfw_concept:
                 if torch.is_tensor(images) or torch.is_tensor(images[0]):
                     images[idx] = torch.zeros_like(images[idx])  # black image
                 else:
                     images[idx] = np.zeros(images[idx].shape)  # black image
+        '''
 
         if any(has_nsfw_concepts):
             logger.warning(

@@ -610,6 +610,7 @@ class StableDiffusionPipeline(
 
     def prepare_latents(self, batch_size, num_channels_latents, height, width, dtype, device, generator, latents=None):
         shape = (batch_size, num_channels_latents, height // self.vae_scale_factor, width // self.vae_scale_factor)
+
         if isinstance(generator, list) and len(generator) != batch_size:
             raise ValueError(
                 f"You have passed a list of generators of length {len(generator)}, but requested an effective batch"
@@ -961,6 +962,7 @@ class StableDiffusionPipeline(
 
         # 5. Prepare latent variables
         num_channels_latents = self.unet.config.in_channels
+
         latents = self.prepare_latents(
             batch_size * num_images_per_prompt,
             num_channels_latents,
@@ -971,6 +973,12 @@ class StableDiffusionPipeline(
             generator,
             latents,
         )
+
+        # ADD: testing flipping latent
+        FLIP_INIT_LATENT = False
+
+        if FLIP_INIT_LATENT:
+            latents = torch.flip(latents, dims=[-1])
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
@@ -989,10 +997,18 @@ class StableDiffusionPipeline(
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
+
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 if self.interrupt:
                     continue
+
+                # TODO: test flipping noise_pred
+                FLIP_LATENT_1 = False
+
+                if FLIP_LATENT_1 and i == 0:
+                    print("Flipping latent model input (1)")
+                    latents = torch.flip(latents, dims=[-1])
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
@@ -1007,7 +1023,14 @@ class StableDiffusionPipeline(
                     cross_attention_kwargs=self.cross_attention_kwargs,
                     added_cond_kwargs=added_cond_kwargs,
                     return_dict=False,
+                    current_iteration=i,
                 )[0]
+
+                # TODO: test flipping noise_pred
+                FLIP_NOISE_PRED = False
+
+                if FLIP_NOISE_PRED and i == 0:
+                    noise_pred = torch.flip(noise_pred, dims=[-1])
 
                 # perform guidance
                 if self.do_classifier_free_guidance:

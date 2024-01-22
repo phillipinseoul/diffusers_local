@@ -150,6 +150,7 @@ class ResnetBlock2D(nn.Module):
         self.nonlinearity = get_activation(non_linearity)
 
         self.upsample = self.downsample = None
+        
         if self.up:
             if kernel == "fir":
                 fir_kernel = (1, 3, 3, 1)

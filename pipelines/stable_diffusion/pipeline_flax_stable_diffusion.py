@@ -195,6 +195,7 @@ class FlaxStableDiffusionPipeline(FlaxDiffusionPipeline):
             has_nsfw_concepts = self._get_has_nsfw_concepts(features, safety_model_params)
 
         images_was_copied = False
+        
         for idx, has_nsfw_concept in enumerate(has_nsfw_concepts):
             if has_nsfw_concept:
                 if not images_was_copied:

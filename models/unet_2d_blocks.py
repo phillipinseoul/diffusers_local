@@ -57,6 +57,7 @@ def get_down_block(
     attention_head_dim: Optional[int] = None,
     downsample_type: Optional[str] = None,
     dropout: float = 0.0,
+    block_idx: Optional[int] = None,        # ADD: block_idx
 ):
     # If attn head dim is not defined, we default it to the number of heads
     if attention_head_dim is None:
@@ -138,6 +139,7 @@ def get_down_block(
             upcast_attention=upcast_attention,
             resnet_time_scale_shift=resnet_time_scale_shift,
             attention_type=attention_type,
+            block_idx=block_idx,        # ADD: block_idx
         )
     elif down_block_type == "SimpleCrossAttnDownBlock2D":
         if cross_attention_dim is None:
@@ -689,6 +691,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                         use_linear_projection=use_linear_projection,
                         upcast_attention=upcast_attention,
                         attention_type=attention_type,
+                        layer_name=f"mid-layer-{i}",
                     )
                 )
             else:
@@ -1045,6 +1048,7 @@ class CrossAttnDownBlock2D(nn.Module):
         only_cross_attention: bool = False,
         upcast_attention: bool = False,
         attention_type: str = "default",
+        block_idx: Optional[int] = None,        # ADD: block_idx
     ):
         super().__init__()
         resnets = []
@@ -1084,6 +1088,7 @@ class CrossAttnDownBlock2D(nn.Module):
                         only_cross_attention=only_cross_attention,
                         upcast_attention=upcast_attention,
                         attention_type=attention_type,
+                        layer_name=f"down-block-{block_idx}-layer-{i}", # ADD: block_idx
                     )
                 )
             else:
@@ -1121,6 +1126,8 @@ class CrossAttnDownBlock2D(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        current_iteration: Optional[int] = None,            # ADD: current_iteration
+        layer_idx: Optional[int] = None,
         additional_residuals: Optional[torch.FloatTensor] = None,
     ) -> Tuple[torch.FloatTensor, Tuple[torch.FloatTensor, ...]]:
         output_states = ()
@@ -1157,7 +1164,21 @@ class CrossAttnDownBlock2D(nn.Module):
                     return_dict=False,
                 )[0]
             else:
+                # print("CrossAttnDownBlock2D(): resnet")
+                # TEST_FLIP = True
+
+                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 1:
+                #     print("FLIP HERE!")
+                #     hidden_states = torch.flip(hidden_states, dims=[-1])
+
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
+
+                # TEST_FLIP = True
+
+                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 0:
+                #     print("FLIP HERE!")
+                #     hidden_states = torch.flip(hidden_states, dims=[-1])
+
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1165,7 +1186,14 @@ class CrossAttnDownBlock2D(nn.Module):
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
+                    current_iteration=current_iteration,            # ADD: current_iteration
                 )[0]
+
+                # TEST_FLIP = True
+
+                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 0:
+                #     print("FLIP HERE!")
+                #     hidden_states = torch.flip(hidden_states, dims=[-1])
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
             if i == len(blocks) - 1 and additional_residuals is not None:
@@ -2296,6 +2324,7 @@ class CrossAttnUpBlock2D(nn.Module):
         upsample_size: Optional[int] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        current_iteration: Optional[int] = None,
     ) -> torch.FloatTensor:
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
         is_freeu_enabled = (
@@ -2352,6 +2381,7 @@ class CrossAttnUpBlock2D(nn.Module):
                 )[0]
             else:
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
+                
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -2359,6 +2389,7 @@ class CrossAttnUpBlock2D(nn.Module):
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
+                    current_iteration=current_iteration,
                 )[0]
 
         if self.upsamplers is not None:

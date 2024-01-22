@@ -1292,9 +1292,9 @@ class AttnProcessor2_0:
         # from https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
         # Efficient implementation equivalent to the following:
         
-        save_attn_maps = True
+        save_attn_maps = False
 
-        if is_gated_self_attention and save_attn_maps:
+        if is_gated_self_attention and save_attn_maps and current_timestep > -1:
             # SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/attention_map"
             SAVE_DIR = "/scratch/yuseung07/attention_map"
             os.makedirs(SAVE_DIR, exist_ok=True)

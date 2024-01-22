@@ -11,6 +11,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+import os
+from os.path import join
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+import cv2
+from PIL import Image, ImageDraw
+
 from typing import Any, Dict, Optional
 
 import torch
@@ -95,11 +103,14 @@ class GatedSelfAttentionDense(nn.Module):
             x: torch.Tensor,
             objs: torch.Tensor
         ) -> torch.Tensor:
-        if not self.enabled:
-            return x
+        # if not self.enabled:
+        #     return x
+        x_vanilla = x.clone().detach()
 
         n_visual = x.shape[1]
         objs = self.linear(objs)
+
+        # print(f"GatedSelfAttentionDense(): objs={objs}")
         
         '''
         x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
@@ -108,12 +119,14 @@ class GatedSelfAttentionDense(nn.Module):
 
         ###### Modified by Yuseung Lee (for understanding) ######
         # 1. concat visual token and grounding token
-        # print(f"x.shape: {x.shape} / objs.shape: {objs.shape}")
-
         concat_tokens = torch.cat([x, objs], dim=1)
+        # concat_tokens_tmp = x
 
         # 2. Layer Normalization
         concat_tokens = self.norm1(concat_tokens)
+
+        # concat_tokens_tmp = self.norm1(concat_tokens_tmp)
+        # concat_tokens = torch.flip(concat_tokens, dims=[1])
 
         # 3. Self-Attention
         attn_output = self.attn(
@@ -121,9 +134,18 @@ class GatedSelfAttentionDense(nn.Module):
             current_timestep = self.current_timestep,  # ADD: for visualization
             gsa_layer_name = self.name,              # ADD: for visualization
             )
+        # attn_output = torch.flip(attn_output, dims=[1])
+        
+        # attn_output_tmp = self.attn(
+        #     concat_tokens_tmp,
+        #     current_timestep = -1,  # ADD: for visualization
+        #     gsa_layer_name = self.name,              # ADD: for visualization
+        #     )
 
         # 4. Split visual token and grounding token
         attn_output_visual = attn_output[:, :n_visual, :]
+        
+        # attn_output_visual = attn_output_tmp
 
         # 5. Add residual
         x = x + self.alpha_attn.tanh() * attn_output_visual
@@ -131,13 +153,8 @@ class GatedSelfAttentionDense(nn.Module):
         # 6. Feed Forward
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
 
-        # ADD: save alpha_attn and alpha_dense
-        # if self.name is not None:
-        #     with open(self.alpha_attn_save_path, "a") as f:
-        #         f.write(f"[{self.name}] {self.alpha_attn.item()}\n")
-            
-        #     with open(self.alpha_dense_save_path, "a") as f:
-        #         f.write(f"[{self.name}] {self.alpha_dense.item()}\n")
+        if not self.enabled:
+            return x_vanilla
 
         return x
 
@@ -203,6 +220,8 @@ class BasicTransformerBlock(nn.Module):
         ff_inner_dim: Optional[int] = None,
         ff_bias: bool = True,
         attention_out_bias: bool = True,
+        layer_name: str = None,       # ADD: for visualization
+        is_gated_self_attention: bool = False,   # ADD: for gated self-attention
     ):
         super().__init__()
         self.only_cross_attention = only_cross_attention
@@ -212,6 +231,12 @@ class BasicTransformerBlock(nn.Module):
         self.use_ada_layer_norm_single = norm_type == "ada_norm_single"
         self.use_layer_norm = norm_type == "layer_norm"
         self.use_ada_layer_norm_continuous = norm_type == "ada_norm_continuous"
+        
+        # ADD: for visualization
+        if "None" in layer_name:
+            self.layer_name = None
+        else:
+            self.layer_name = layer_name
 
         if norm_type in ("ada_norm", "ada_norm_zero") and num_embeds_ada_norm is None:
             raise ValueError(
@@ -256,6 +281,7 @@ class BasicTransformerBlock(nn.Module):
             cross_attention_dim=cross_attention_dim if only_cross_attention else None,
             upcast_attention=upcast_attention,
             out_bias=attention_out_bias,
+            is_gated_self_attention=is_gated_self_attention,   # ADD: for gated self-attention
         )
 
         # 2. Cross-Attn
@@ -340,6 +366,7 @@ class BasicTransformerBlock(nn.Module):
         cross_attention_kwargs: Dict[str, Any] = None,
         class_labels: Optional[torch.LongTensor] = None,
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        current_iteration: Optional[int] = None,        # ADD: for visualization
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -386,7 +413,48 @@ class BasicTransformerBlock(nn.Module):
         elif self.use_ada_layer_norm_single:
             attn_output = gate_msa * attn_output
 
-        hidden_states = attn_output + hidden_states
+        hidden_states_temp = attn_output + hidden_states
+
+        # ADD: for visualization self-attention
+        SAVE_ATTN_MAPS = False
+
+        if SAVE_ATTN_MAPS and self.layer_name is not None and "mid" not in self.layer_name:
+            ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/check_sd_self_attn"
+            os.makedirs(ATTN_SAVE_DIR, exist_ok=True)
+            print(f"BasicTransformerBlock(): layer_name={self.layer_name}")
+            print(f"attn_output: {attn_output.shape}")
+            print(f"hidden_states: {hidden_states.shape}")
+
+            n_tokens_row = int(math.sqrt(attn_output.shape[1]))
+            
+            # 1. Get attention map
+            attn_output_npy = attn_output[1].detach().cpu().numpy()     
+            attn_output_npy = attn_output_npy.reshape(n_tokens_row, n_tokens_row, -1)           # N x N x C
+
+            # 2. Get hidden states (original)
+            hidden_states_npy = hidden_states[1].detach().cpu().numpy()
+            hidden_states_npy = hidden_states_npy.reshape(n_tokens_row, n_tokens_row, -1)       # N x N x C
+
+            # 3. Get hidden states (after self-attention)
+            hidden_states_temp_npy = hidden_states_temp[1].detach().cpu().numpy()
+            hidden_states_temp_npy = hidden_states_temp_npy.reshape(n_tokens_row, n_tokens_row, -1)       # N x N x C
+
+            # 3. save
+            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_attn_output_iter_{current_iteration:02d}.npy"), attn_output_npy)
+            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_before_iter_{current_iteration:02d}.npy"), hidden_states_npy)
+            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_after_iter_{current_iteration:02d}.npy"), hidden_states_temp_npy)
+
+            
+        # add self-attn outputs with residual
+        # hidden_states = attn_output + hidden_states
+        hidden_states = hidden_states_temp
+            
+        # if self.layer_name is not None and "down-block-2" in self.layer_name and current_iteration < 1:
+        #     hidden_states = torch.flip(attn_output, dims=[-1]) + hidden_states
+        #     print(f"FLIP!!!")
+        # else:
+        #     hidden_states = attn_output + hidden_states
+
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
