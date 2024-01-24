@@ -109,8 +109,6 @@ class GatedSelfAttentionDense(nn.Module):
 
         n_visual = x.shape[1]
         objs = self.linear(objs)
-
-        # print(f"GatedSelfAttentionDense(): objs={objs}")
         
         '''
         x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
@@ -143,6 +141,7 @@ class GatedSelfAttentionDense(nn.Module):
         #     )
 
         # 4. Split visual token and grounding token
+        
         attn_output_visual = attn_output[:, :n_visual, :]
         
         # attn_output_visual = attn_output_tmp

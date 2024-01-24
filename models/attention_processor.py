@@ -1311,6 +1311,7 @@ class AttnProcessor2_0:
             
             attn_weight = query @ key.transpose(-2, -1) * scale_factor
             attn_weight += attn_bias
+
             attn_weight = torch.softmax(attn_weight, dim=-1)
 
             # NOTE: fix num. of grounding tokens to 30
@@ -1345,17 +1346,118 @@ class AttnProcessor2_0:
 
         ############################ Modified by Yuseung Lee ############################
 
-        # TODO: add support for attn.scale when we move to Torch 2.1
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, 
-            attn_mask=attention_mask, dropout_p=0.0, is_causal=False
-        )
+
+        ############################ Modified by Yuseung Lee ############################
+        USE_DOT_PRODUCT = False
+
+        if USE_DOT_PRODUCT:
+            # TODO: add support for attn.scale when we move to Torch 2.1
+            hidden_states = F.scaled_dot_product_attention(
+                query, key, value, 
+                attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+            )
+        else:
+            # NOTE: not using F.scaled_dot_product_attention()
+            L, S = query.size(-2), key.size(-2)
+            
+            # Efficient implementation equivalent to the following:
+            is_causal = True
+            
+            attn_mask = torch.ones(
+                L, S, dtype=torch.bool, device=query.device
+                ).tril(diagonal=0) if is_causal else attn_mask
+            
+            attn_mask = attn_mask.masked_fill(~attn_mask, -float('inf')) if attn_mask.dtype==torch.bool else attn_mask
+            
+            # compute attention weights
+            # 2 x 8 x N x N (N: num. of image tokens + num. of grounding tokens for GLIGEN)
+
+            key_t = key.transpose(-2, -1)
+            # print(f"key_t: {key_t.shape}")
+            # print(f"query: {query.shape}")
+
+            MAX_TOKENS = 30
+            TRUNCATE_GSA = False
+            # TRUNCATE_GSA = True
+
+            if is_gated_self_attention and TRUNCATE_GSA:
+                '''
+                    - query: torch.Size([2, 8, 4096, 40])
+                    - key_t: torch.Size([2, 8, 40, 4096])
+                '''
+                # query: only visual tokens
+                query_trunc = query[:, :, :query.shape[2] - MAX_TOKENS, :]       # 2 x 8 x (N x N) x C
+                # query_trunc = query[:, :, :MAX_TOKENS, :]                       # 2 x 8 x (N x N) x MAX_TOKENS
+
+                # key_t_trunc: only grounding tokens
+                key_t_trunc = key_t[:, :, :, -MAX_TOKENS:]                       # 2 x 8 x C x MAX_TOKENS
+                # key_t_trunc = key_t[:, :, :, :key_t.shape[2] - MAX_TOKENS]                       # 2 x 8 x MAX_TOKENS x C
+
+                # dot product
+                qk_transpose = query_trunc @ key_t_trunc                        # 2 x 8 x (N x N) x MAX_TOKENS
+
+                attn_mask = attn_mask[
+                    :qk_transpose.shape[-2], 
+                    :qk_transpose.shape[-1]
+                ]
+            else:
+                # dot product
+                qk_transpose = query @ key_t
+
+            attn_weight = torch.softmax(
+                (qk_transpose / math.sqrt(query.size(-1))) + attn_mask, 
+                dim=-1
+                # dim=-2
+            )
+
+            # attn_map = attn_weight[:, :, :, n_visual_tokens + idx]     # (batch, num_heads, seq_len)
+            # attn_map = attn_map[:, :, :n_visual_tokens]             # (batch, num_heads, num_visual_tokens)
+
+            # print(f"qk_transpose: {qk_transpose.shape}")
+            # print(f"attn_mask: {attn_mask.shape}")
+            # print(f"attn_weight: {attn_weight.shape}")
+            # attn_weight = torch.softmax((query @ key.transpose(-2, -1) / math.sqrt(query.size(-1))) + attn_mask, dim=-1)
+            
+            attn_weight = torch.dropout(attn_weight, 0.0, train=True)
+
+            # multiply attention weights with values
+            # print(f"value: {value.shape}")
+            # 
+
+            if is_gated_self_attention and TRUNCATE_GSA:
+                # value_trunc: only grounding tokens
+                # value_trunc = value[:, :, :MAX_TOKENS, :]                       # 2 x 8 x (N x N) x C
+                value_trunc = value[:, :, -MAX_TOKENS:, :]       # 2 x B x MAX_TOKENS x C
+
+                # print(f"value_trunc: {value_trunc.shape}")
+
+
+                # hidden_states: only visual tokens
+                hidden_states = attn_weight @ value_trunc
+                
+                # ORIGINAL
+                # attn_weight: 2 x 8 x 4096 x 4096
+                # value_trunc: 2 x 8 x 4096 x 40
+                # hidden_states: 2 x 8 x 4096 x 40
+
+                # TRUNCATED
+                # attn_weight: 2 x 8 x 4096 x 30
+                # value_trunc: 2 x 8 x 30 x 40
+                # hidden_states: 2 x 8 x 4096 x 40
+
+                # NOTE: hidden_states: torch.Size([2, 8, 4096, 40])
+            else:
+                hidden_states = attn_weight @ value
+        ############################ Modified by Yuseung Lee ############################
+
+        # print(f"hidden_states: {hidden_states.shape}")
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states, *args)
+
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
