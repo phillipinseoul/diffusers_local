@@ -709,7 +709,8 @@ class PositionNet(nn.Module):
             positive_embeddings = positive_embeddings * masks + (1 - masks) * positive_null
 
             # obtain grounding tokens
-            objs = self.linears(torch.cat([
+            objs = self.linears(
+                torch.cat([
                 positive_embeddings,
                 xyxy_embedding
             ], dim=-1))

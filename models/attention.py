@@ -94,14 +94,15 @@ class GatedSelfAttentionDense(nn.Module):
 
         # ADD: for debugging
         self.name = None
-        self.alpha_attn_save_path = None
-        self.alpha_dense_save_path = None
         self.current_timestep = None
+        self.grounding_token_save_dir = None
+        self.prompt = None
 
     def forward(
             self, 
             x: torch.Tensor,
-            objs: torch.Tensor
+            objs: torch.Tensor,
+            layer_name: Optional[str] = None,       # ADD: for visualization
         ) -> torch.Tensor:
         # if not self.enabled:
         #     return x
@@ -109,6 +110,38 @@ class GatedSelfAttentionDense(nn.Module):
 
         n_visual = x.shape[1]
         objs = self.linear(objs)
+
+        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
+        SAVE_LAYERS = [
+            "down-block-0-layer-1-0",
+            "down-block-1-layer-1-0",
+            "down-block-2-layer-1-0"
+        ]
+        SAVE_GROUNDING_TOKENS = False
+        SAVE_CONCAT_TOKENS = False
+
+        if SAVE_GROUNDING_TOKENS and (layer_name in SAVE_LAYERS) and (not self.grounding_token_save_dir is None) and (self.current_timestep == 0):
+            print(f"Saving grounding tokens for {layer_name}...")
+            print(f"objs.shape: {objs.shape}")
+        
+            grounding_tokens = objs.detach().cpu().numpy()
+            # grounding_tokens = grounding_tokens.reshape(grounding_tokens.shape[0], grounding_tokens.shape[1], -1)
+
+            prompt_name = self.prompt.replace(" ", "_")
+            save_dir = join(self.grounding_token_save_dir, prompt_name)
+            os.makedirs(save_dir, exist_ok=True)
+
+            np.save(
+                join(
+                    save_dir, 
+                    f"{layer_name}_iter_{self.current_timestep:02d}.npy"
+                ), 
+                grounding_tokens
+            )
+            print(f"Saving grounding tokens for {layer_name}... Done!")
+
+        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
+
         
         '''
         x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
@@ -123,8 +156,37 @@ class GatedSelfAttentionDense(nn.Module):
         # 2. Layer Normalization
         concat_tokens = self.norm1(concat_tokens)
 
-        # concat_tokens_tmp = self.norm1(concat_tokens_tmp)
-        # concat_tokens = torch.flip(concat_tokens, dims=[1])
+        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
+        # print(f"self.grounding_token_save_dir: {self.grounding_token_save_dir}")
+        # print(f"self.current_timestep: {self.current_timestep}")
+        # print(f"SAVE_CONCAT_TOKENS: {SAVE_CONCAT_TOKENS}")
+
+        if (
+            SAVE_CONCAT_TOKENS and 
+            (layer_name in SAVE_LAYERS) and 
+            (self.grounding_token_save_dir is not None) 
+            and (self.current_timestep == 0)
+        ):
+            print(f"Saving concat_tokens for {layer_name}...")
+            print(f"concat_tokens.shape: {concat_tokens.shape}")
+        
+            concat_tokens_npy = concat_tokens.detach().cpu().numpy()
+
+            prompt_name = self.prompt.replace(" ", "_")
+            save_dir = join(self.grounding_token_save_dir, prompt_name)
+            os.makedirs(save_dir, exist_ok=True)
+
+            np.save(
+                join(
+                    save_dir, 
+                    f"{layer_name}_iter_{self.current_timestep:02d}_concat.npy"
+                ), 
+                concat_tokens_npy
+            )
+            print(f"Saving concat_tokens for {layer_name}... Done!")
+
+
+        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
 
         # 3. Self-Attention
         attn_output = self.attn(
@@ -132,13 +194,6 @@ class GatedSelfAttentionDense(nn.Module):
             current_timestep = self.current_timestep,  # ADD: for visualization
             gsa_layer_name = self.name,              # ADD: for visualization
             )
-        # attn_output = torch.flip(attn_output, dims=[1])
-        
-        # attn_output_tmp = self.attn(
-        #     concat_tokens_tmp,
-        #     current_timestep = -1,  # ADD: for visualization
-        #     gsa_layer_name = self.name,              # ADD: for visualization
-        #     )
 
         # 4. Split visual token and grounding token
         
@@ -366,6 +421,7 @@ class BasicTransformerBlock(nn.Module):
         class_labels: Optional[torch.LongTensor] = None,
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
         current_iteration: Optional[int] = None,        # ADD: for visualization
+        hidden_states_save_dir: Optional[str] = None,   # ADD: for visualization
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -414,7 +470,7 @@ class BasicTransformerBlock(nn.Module):
 
         hidden_states_temp = attn_output + hidden_states
 
-        # ADD: for visualization self-attention
+        ############################ ADD: for visualization self-attention ############################
         SAVE_ATTN_MAPS = False
 
         if SAVE_ATTN_MAPS and self.layer_name is not None and "mid" not in self.layer_name:
@@ -442,26 +498,45 @@ class BasicTransformerBlock(nn.Module):
             np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_attn_output_iter_{current_iteration:02d}.npy"), attn_output_npy)
             np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_before_iter_{current_iteration:02d}.npy"), hidden_states_npy)
             np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_after_iter_{current_iteration:02d}.npy"), hidden_states_temp_npy)
+        ############################ ADD: for visualization self-attention ############################
 
-            
         # add self-attn outputs with residual
         # hidden_states = attn_output + hidden_states
         hidden_states = hidden_states_temp
-            
-        # if self.layer_name is not None and "down-block-2" in self.layer_name and current_iteration < 1:
-        #     hidden_states = torch.flip(attn_output, dims=[-1]) + hidden_states
-        #     print(f"FLIP!!!")
-        # else:
-        #     hidden_states = attn_output + hidden_states
 
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
+
+        
+        # ADD: save the hidden_states right before GSA
+        SAVE_HIDDEN_STATES = False
+
+        SAVE_HIDDEN_STATES_LAYERS = [
+            "down-block-0-layer-1-0",
+            "down-block-1-layer-1-0",
+            "down-block-2-layer-1-0"
+        ]
+
+        if SAVE_HIDDEN_STATES and (self.layer_name in SAVE_HIDDEN_STATES_LAYERS) and (current_iteration == 0):
+            print(f"Saving hidden_states for {self.layer_name}...")
+
+            hidden_states_npy = hidden_states.detach().cpu().numpy()
+            np.save(
+                join(
+                    hidden_states_save_dir, 
+                    f"{self.layer_name}_iter_{current_iteration:02d}.npy"
+                ),
+                hidden_states_npy
+            )
+            print(f"Saving hidden_states for {self.layer_name}... Done!")
+
 
         # 2.5 GLIGEN Control
         if gligen_kwargs is not None:
             hidden_states = self.fuser(
                 hidden_states,
-                gligen_kwargs["objs"]    
+                gligen_kwargs["objs"],
+                layer_name = self.layer_name,       # ADD: for visualization
             )
 
         # 3. Cross-Attention
@@ -482,10 +557,13 @@ class BasicTransformerBlock(nn.Module):
             if self.pos_embed is not None and self.use_ada_layer_norm_single is False:
                 norm_hidden_states = self.pos_embed(norm_hidden_states)
 
+            # cross-attention
             attn_output = self.attn2(
                 norm_hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
+                current_timestep=current_iteration,     # for cross-attention visualization (Yuseung)
+                is_cross_attention=True,                # for cross-attention visualization (Yuseung)
                 **cross_attention_kwargs,
             )
             hidden_states = attn_output + hidden_states

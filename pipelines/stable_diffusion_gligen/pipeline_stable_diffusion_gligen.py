@@ -536,8 +536,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             enable_down_blocks = [0, 1, 2],      # ADD: enable specific unet blocks/layers
             enable_mid_block = True,             # down_blocks: 3 layers, mid_block: 1 layer, up_blocks: 3 layers
             enable_up_blocks = [1, 2, 3],
-            alpha_attn_save_path = None,         # ADD: save alpha_attn to path
-            alpha_dense_save_path = None,        # ADD: save alpha_dense to path
+            grounding_token_save_dir = None,    # ADD: save grounding tokens to dir
+            prompt = None,                      # ADD: prompt
         ):
         # Enable GSA() in down_blocks
         for i in range(len(self.unet.down_blocks)):
@@ -547,18 +547,14 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     module.name = "down_" + str(i)
 
                     # ADD: add save path
-                    module.alpha_attn_save_path = alpha_attn_save_path
-                    module.alpha_dense_save_path = alpha_dense_save_path
+                    module.grounding_token_save_dir = grounding_token_save_dir
+                    module.prompt = prompt
 
                     # ADD: enable GSA
                     if i in enable_down_blocks:
                         module.enabled = True
                     else:
                         module.enabled = False
-            
-        # for module in self.unet.down_blocks.modules():
-        #     if module._get_name() == "GatedSelfAttentionDense":
-        #         module.enabled = enable_down_blocks
 
         # Enable GSA() in mid_block
         for module in self.unet.mid_block.modules():
@@ -567,8 +563,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                 module.name = "mid"
 
                 # ADD: add save path
-                module.alpha_attn_save_path = alpha_attn_save_path
-                module.alpha_dense_save_path = alpha_dense_save_path
+                module.grounding_token_save_dir = grounding_token_save_dir
+                module.prompt = prompt
 
                 # ADD: enable GSA
                 module.enabled = enable_mid_block
@@ -581,23 +577,14 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     module.name = "up_" + str(i)
 
                     # ADD: add save path
-                    module.alpha_attn_save_path = alpha_attn_save_path
-                    module.alpha_dense_save_path = alpha_dense_save_path
+                    module.grounding_token_save_dir = grounding_token_save_dir
+                    module.prompt = prompt
 
                     # ADD: enable GSA
                     if i in enable_up_blocks:
                         module.enabled = True
                     else:
                         module.enabled = False
-        
-        # for module in self.unet.up_blocks.modules():
-        #     if module._get_name() == "GatedSelfAttentionDense":
-        #         module.enabled = enable_up_blocks
-
-        # for module in self.unet.modules():
-        #     if type(module) is GatedSelfAttentionDense:
-        #         module.enabled = enabled
-
 
     def draw_inpaint_mask_from_boxes(self, boxes, size):
         inpaint_mask = torch.ones(size[0], size[1])
@@ -653,6 +640,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         enable_mid_block: bool = True,
         enable_up_blocks: List[int] = [1, 2, 3],
         return_x0_predictions: bool = False,                          # ADD: return x0 predictions
+        grounding_token_save_dir: Optional[str] = None,               # ADD: save grounding tokens
+        gligen_box_idx: Optional[int] = None,                         # ADD: gligen_box_idx
     ):
         r"""
         The call function to the pipeline for generation.
@@ -891,8 +880,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             enable_down_blocks = enable_down_blocks,
             enable_mid_block = enable_mid_block,
             enable_up_blocks = enable_up_blocks,
-            # alpha_attn_save_path = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/alpha_statistics/alpha_attn.txt",
-            # alpha_dense_save_path = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/alpha_statistics/alpha_dense.txt",
+            grounding_token_save_dir = grounding_token_save_dir,
+            prompt = prompt,
         )
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
@@ -906,25 +895,25 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # ADD: for attention map visualization (by Yuseung)
-                # print(f"set current timestep: {i}")
                 self.set_fuser_current_timestep(i)
 
                 # Scheduled sampling
                 # if i == num_grounding_steps:
                 if i < num_grounding_steps_start or i > num_grounding_steps_end:
-                    # self.enable_fuser(False)
-                    # print("disable fuser")
                     self.enable_fuser(
                         enable_down_blocks = [],
                         enable_mid_block = False,
                         enable_up_blocks = [],
+                        grounding_token_save_dir = None,
+                        prompt = None,
                     )
                 else:
-                    # print("enable fuser")
                     self.enable_fuser(
                         enable_down_blocks = enable_down_blocks,
                         enable_mid_block = enable_mid_block,
                         enable_up_blocks = enable_up_blocks,
+                        grounding_token_save_dir = grounding_token_save_dir,
+                        prompt = prompt,
                     )
 
 
@@ -956,6 +945,10 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     t,
                     encoder_hidden_states=prompt_embeds,
                     cross_attention_kwargs=cross_attention_kwargs,
+                    current_iteration=i,
+                    prompt=prompt,                  # ADD: for grounding token analysis (by Yuseung)
+                    grounding_token_save_dir=grounding_token_save_dir,    # ADD: for grounding token analysis (by Yuseung)
+                    gligen_box_idx=gligen_box_idx,  # ADD: for grounding token analysis (by Yuseung)
                 ).sample
 
                 # perform guidance
@@ -1004,16 +997,17 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             return (image, has_nsfw_concept)
         
         # ADD: decode x0 predictions
-        x0_predictions_pil = []
-        for i in range(len(x0_predictions)):
-            x0_predictions_i = x0_predictions[i].to(self.vae.device)
-            x0_decoded = self.vae.decode(x0_predictions_i / self.vae.config.scaling_factor, return_dict=False)[0]
+        if return_x0_predictions:
+            x0_predictions_pil = []
+            for i in range(len(x0_predictions)):
+                x0_predictions_i = x0_predictions[i].to(self.vae.device)
+                x0_decoded = self.vae.decode(x0_predictions_i / self.vae.config.scaling_factor, return_dict=False)[0]
 
-            x0_decoded = x0_decoded.detach().cpu()
-            x0_decoded = (x0_decoded + 1.0) / 2.0
-            x0_decoded = x0_decoded.clamp(0.0, 1.0)
-            x0_decoded = T.ToPILImage()(x0_decoded[0])
-            x0_predictions_pil.append(x0_decoded)
+                x0_decoded = x0_decoded.detach().cpu()
+                x0_decoded = (x0_decoded + 1.0) / 2.0
+                x0_decoded = x0_decoded.clamp(0.0, 1.0)
+                x0_decoded = T.ToPILImage()(x0_decoded[0])
+                x0_predictions_pil.append(x0_decoded)
 
         if return_x0_predictions:
             return (StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), x0_predictions_pil)

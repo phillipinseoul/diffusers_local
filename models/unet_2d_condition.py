@@ -13,7 +13,9 @@
 # limitations under the License.
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Union
-
+import os
+from os.path import join
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.utils.checkpoint
@@ -858,6 +860,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         current_iteration: Optional[int] = None,        # ADD: for debugging (Yuseung)
+        prompt: Optional[str] = None,                   # ADD: for debugging (Yuseung)
+        grounding_token_save_dir: Optional[str] = None, # ADD: for debugging (Yuseung)
+        gligen_box_idx: Optional[int] = None,           # ADD: for debugging (Yuseung)
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1087,7 +1092,10 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:
             cross_attention_kwargs = cross_attention_kwargs.copy()
             gligen_args = cross_attention_kwargs.pop("gligen")
-            cross_attention_kwargs["gligen"] = {"objs": self.position_net(**gligen_args)}
+
+            gligen_objs = self.position_net(**gligen_args)
+            cross_attention_kwargs["gligen"] = {"objs": gligen_objs}
+            # cross_attention_kwargs["gligen"] = {"objs": self.position_net(**gligen_args)}
 
         # 3. down
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
@@ -1142,6 +1150,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
                     current_iteration=current_iteration,
+                    hidden_states_save_dir=grounding_token_save_dir,
                     layer_idx=layer_idx,
                     **additional_residuals,
                 )

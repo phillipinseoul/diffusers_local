@@ -1128,6 +1128,7 @@ class CrossAttnDownBlock2D(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         current_iteration: Optional[int] = None,            # ADD: current_iteration
         layer_idx: Optional[int] = None,
+        hidden_states_save_dir: Optional[str] = None,       # ADD: hidden_states_save_dir
         additional_residuals: Optional[torch.FloatTensor] = None,
     ) -> Tuple[torch.FloatTensor, Tuple[torch.FloatTensor, ...]]:
         output_states = ()
@@ -1164,21 +1165,10 @@ class CrossAttnDownBlock2D(nn.Module):
                     return_dict=False,
                 )[0]
             else:
-                # print("CrossAttnDownBlock2D(): resnet")
-                # TEST_FLIP = True
-
-                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 1:
-                #     print("FLIP HERE!")
-                #     hidden_states = torch.flip(hidden_states, dims=[-1])
-
+                # ResNet
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
 
-                # TEST_FLIP = True
-
-                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 0:
-                #     print("FLIP HERE!")
-                #     hidden_states = torch.flip(hidden_states, dims=[-1])
-
+                # Attention
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1187,13 +1177,8 @@ class CrossAttnDownBlock2D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                     current_iteration=current_iteration,            # ADD: current_iteration
+                    hidden_states_save_dir=hidden_states_save_dir,  # ADD: hidden_states_save_dir
                 )[0]
-
-                # TEST_FLIP = True
-
-                # if TEST_FLIP and i == 0 and current_iteration == 0 and layer_idx == 0:
-                #     print("FLIP HERE!")
-                #     hidden_states = torch.flip(hidden_states, dims=[-1])
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
             if i == len(blocks) - 1 and additional_residuals is not None:

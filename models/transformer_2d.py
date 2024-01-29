@@ -260,6 +260,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         current_iteration: Optional[int] = None,
+        hidden_states_save_dir: Optional[str] = None,
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -404,6 +405,7 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                     class_labels=class_labels,
                     current_iteration=current_iteration,
+                    hidden_states_save_dir=hidden_states_save_dir,
                 )
 
         # 3. Output

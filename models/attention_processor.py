@@ -525,6 +525,7 @@ class Attention(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         current_timestep: Optional[int] = None,     # ADD: for gated self-attention (by Yuseung Lee)
         gsa_layer_name: Optional[str] = None,       # ADD: for gated self-attention (by Yuseung Lee)
+        is_cross_attention: bool = False,           # ADD: for cross-attention (by Yuseung Lee)
         **cross_attention_kwargs,
     ) -> torch.Tensor:
         r"""
@@ -553,6 +554,7 @@ class Attention(nn.Module):
             encoder_hidden_states=encoder_hidden_states,
             attention_mask=attention_mask,
             is_gated_self_attention=self.is_gated_self_attention,      # ADD: gated self-attention (by Yuseung Lee)
+            is_cross_attention=is_cross_attention,                     # ADD: cross-attention (by Yuseung Lee)
             current_timestep=current_timestep,                         # ADD: gated self-attention (by Yuseung Lee)
             gsa_layer_name=gsa_layer_name,                             # ADD: gated self-attention (by Yuseung Lee)
             **cross_attention_kwargs,
@@ -1241,6 +1243,7 @@ class AttnProcessor2_0:
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
         is_gated_self_attention: bool = False,      # ADD: gated self-attention (by Yuseung Lee)
+        is_cross_attention: bool = False,           # ADD: cross-attention (by Yuseung Lee)
         current_timestep: Optional[int] = None,     # ADD: gated self-attention (by Yuseung Lee)
         gsa_layer_name: Optional[str] = None,       # ADD: gated self-attention (by Yuseung Lee)
     ) -> torch.FloatTensor:
@@ -1346,7 +1349,6 @@ class AttnProcessor2_0:
 
         ############################ Modified by Yuseung Lee ############################
 
-
         ############################ Modified by Yuseung Lee ############################
         USE_DOT_PRODUCT = False
 
@@ -1373,12 +1375,10 @@ class AttnProcessor2_0:
             # 2 x 8 x N x N (N: num. of image tokens + num. of grounding tokens for GLIGEN)
 
             key_t = key.transpose(-2, -1)
-            # print(f"key_t: {key_t.shape}")
-            # print(f"query: {query.shape}")
 
             MAX_TOKENS = 30
+            # TRUNCATE_GSA = False
             TRUNCATE_GSA = False
-            # TRUNCATE_GSA = True
 
             if is_gated_self_attention and TRUNCATE_GSA:
                 '''
@@ -1387,11 +1387,9 @@ class AttnProcessor2_0:
                 '''
                 # query: only visual tokens
                 query_trunc = query[:, :, :query.shape[2] - MAX_TOKENS, :]       # 2 x 8 x (N x N) x C
-                # query_trunc = query[:, :, :MAX_TOKENS, :]                       # 2 x 8 x (N x N) x MAX_TOKENS
 
                 # key_t_trunc: only grounding tokens
                 key_t_trunc = key_t[:, :, :, -MAX_TOKENS:]                       # 2 x 8 x C x MAX_TOKENS
-                # key_t_trunc = key_t[:, :, :, :key_t.shape[2] - MAX_TOKENS]                       # 2 x 8 x MAX_TOKENS x C
 
                 # dot product
                 qk_transpose = query_trunc @ key_t_trunc                        # 2 x 8 x (N x N) x MAX_TOKENS
@@ -1407,50 +1405,84 @@ class AttnProcessor2_0:
             attn_weight = torch.softmax(
                 (qk_transpose / math.sqrt(query.size(-1))) + attn_mask, 
                 dim=-1
-                # dim=-2
             )
-
-            # attn_map = attn_weight[:, :, :, n_visual_tokens + idx]     # (batch, num_heads, seq_len)
-            # attn_map = attn_map[:, :, :n_visual_tokens]             # (batch, num_heads, num_visual_tokens)
-
-            # print(f"qk_transpose: {qk_transpose.shape}")
-            # print(f"attn_mask: {attn_mask.shape}")
-            # print(f"attn_weight: {attn_weight.shape}")
-            # attn_weight = torch.softmax((query @ key.transpose(-2, -1) / math.sqrt(query.size(-1))) + attn_mask, dim=-1)
-            
             attn_weight = torch.dropout(attn_weight, 0.0, train=True)
 
-            # multiply attention weights with values
-            # print(f"value: {value.shape}")
-            # 
+            ############################ ADD: Cross-Attention Visualization (Yuseung) ############################
+
+            SAVE_CROSS_ATTN = True
+            USE_GSA = False
+
+            if USE_GSA:
+                CROSS_ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/with_gsa"
+            else:
+                # CROSS_ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/without_gsa"
+                CROSS_ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/inject"
+            
+            # if is_cross_attention and SAVE_CROSS_ATTN and current_timestep == 0:
+            print(f"current_timestep: {current_timestep}")
+
+            if is_cross_attention and SAVE_CROSS_ATTN and (current_timestep is not None):
+                _, _, C, _ = attn_weight.shape
+                os.makedirs(CROSS_ATTN_SAVE_DIR, exist_ok=True)
+
+                if C == 4096:
+                    cross_attn_layer = "down-block-0-layer-1-0_iter_00"
+
+                    # TODO: remove this!!!!!!
+                    new_attn_weight = np.load("/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/with_gsa/cross_attn_weight_down-block-0-layer-1-0_iter_00.npy")
+                    attn_weight = torch.from_numpy(new_attn_weight).to(attn_weight.device)
+
+                elif C == 1024:
+                    cross_attn_layer = "down-block-1-layer-1-0_iter_00"
+
+                    # TODO: remove this!!!!!!
+                    new_attn_weight = np.load("/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/with_gsa/cross_attn_weight_down-block-1-layer-1-0_iter_00.npy")
+                    attn_weight = torch.from_numpy(new_attn_weight).to(attn_weight.device)
+
+                elif C == 256:
+                    cross_attn_layer = "down-block-2-layer-1-0_iter_00"
+                    
+                    # TODO: remove this!!!!!!
+                    new_attn_weight = np.load("/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/with_gsa/cross_attn_weight_down-block-2-layer-1-0_iter_00.npy")
+                    attn_weight = torch.from_numpy(new_attn_weight).to(attn_weight.device)
+                    # attn_weight_temp = attn_weight[1]
+
+                else:
+                    raise ValueError(f"Invalid channel size: {C}")
+
+                attn_weight_npy = attn_weight.detach().cpu().numpy()
+                
+                np.save(
+                    join(CROSS_ATTN_SAVE_DIR, f"cross_attn_weight_{cross_attn_layer}.npy"),
+                    attn_weight_npy
+                )
+                print(f"Saved cross-attention weight at {join(CROSS_ATTN_SAVE_DIR, f'cross_attn_weight_{cross_attn_layer}.npy')}")
+
+        ############################ ADD: Cross-Attention Visualization (Yuseung) ############################
+        
 
             if is_gated_self_attention and TRUNCATE_GSA:
                 # value_trunc: only grounding tokens
-                # value_trunc = value[:, :, :MAX_TOKENS, :]                       # 2 x 8 x (N x N) x C
                 value_trunc = value[:, :, -MAX_TOKENS:, :]       # 2 x B x MAX_TOKENS x C
-
-                # print(f"value_trunc: {value_trunc.shape}")
-
 
                 # hidden_states: only visual tokens
                 hidden_states = attn_weight @ value_trunc
-                
-                # ORIGINAL
-                # attn_weight: 2 x 8 x 4096 x 4096
-                # value_trunc: 2 x 8 x 4096 x 40
-                # hidden_states: 2 x 8 x 4096 x 40
 
-                # TRUNCATED
-                # attn_weight: 2 x 8 x 4096 x 30
-                # value_trunc: 2 x 8 x 30 x 40
-                # hidden_states: 2 x 8 x 4096 x 40
+                '''                
+                    # ORIGINAL
+                    # attn_weight: 2 x 8 x 4096 x 4096
+                    # value_trunc: 2 x 8 x 4096 x 40
+                    # hidden_states: 2 x 8 x 4096 x 40
 
-                # NOTE: hidden_states: torch.Size([2, 8, 4096, 40])
+                    # TRUNCATED
+                    # attn_weight: 2 x 8 x 4096 x 30
+                    # value_trunc: 2 x 8 x 30 x 40
+                    # hidden_states: 2 x 8 x 4096 x 40
+                '''
             else:
                 hidden_states = attn_weight @ value
         ############################ Modified by Yuseung Lee ############################
-
-        # print(f"hidden_states: {hidden_states.shape}")
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
