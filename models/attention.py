@@ -103,9 +103,12 @@ class GatedSelfAttentionDense(nn.Module):
             x: torch.Tensor,
             objs: torch.Tensor,
             layer_name: Optional[str] = None,       # ADD: for visualization
+            current_iteration: Optional[int] = None,        # ADD: for visualization
         ) -> torch.Tensor:
-        # if not self.enabled:
-        #     return x
+        
+        if not self.enabled:
+            return x
+        
         x_vanilla = x.clone().detach()
 
         n_visual = x.shape[1]
@@ -142,12 +145,6 @@ class GatedSelfAttentionDense(nn.Module):
 
         ############## ADD: save grounding tokens for debugging (Yuseung) ##############
 
-        
-        '''
-        x = x + self.alpha_attn.tanh() * self.attn(self.norm1(torch.cat([x, objs], dim=1)))[:, :n_visual, :]
-        x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
-        '''
-
         ###### Modified by Yuseung Lee (for understanding) ######
         # 1. concat visual token and grounding token
         concat_tokens = torch.cat([x, objs], dim=1)
@@ -157,15 +154,13 @@ class GatedSelfAttentionDense(nn.Module):
         concat_tokens = self.norm1(concat_tokens)
 
         ############## ADD: save grounding tokens for debugging (Yuseung) ##############
-        # print(f"self.grounding_token_save_dir: {self.grounding_token_save_dir}")
-        # print(f"self.current_timestep: {self.current_timestep}")
-        # print(f"SAVE_CONCAT_TOKENS: {SAVE_CONCAT_TOKENS}")
 
         if (
             SAVE_CONCAT_TOKENS and 
             (layer_name in SAVE_LAYERS) and 
             (self.grounding_token_save_dir is not None) 
-            and (self.current_timestep == 0)
+            # and (self.current_timestep == 0)
+            and (current_iteration == 0)
         ):
             print(f"Saving concat_tokens for {layer_name}...")
             print(f"concat_tokens.shape: {concat_tokens.shape}")
@@ -191,7 +186,8 @@ class GatedSelfAttentionDense(nn.Module):
         # 3. Self-Attention
         attn_output = self.attn(
             concat_tokens,
-            current_timestep = self.current_timestep,  # ADD: for visualization
+            # current_timestep = self.current_timestep,  # ADD: for visualization
+            current_timestep = current_iteration,  # ADD: for visualization
             gsa_layer_name = self.name,              # ADD: for visualization
             )
 
@@ -207,8 +203,8 @@ class GatedSelfAttentionDense(nn.Module):
         # 6. Feed Forward
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
 
-        if not self.enabled:
-            return x_vanilla
+        # if not self.enabled:
+        #     return x_vanilla
 
         return x
 
@@ -537,6 +533,7 @@ class BasicTransformerBlock(nn.Module):
                 hidden_states,
                 gligen_kwargs["objs"],
                 layer_name = self.layer_name,       # ADD: for visualization
+                current_iteration = current_iteration,        # ADD: for visualization
             )
 
         # 3. Cross-Attention
