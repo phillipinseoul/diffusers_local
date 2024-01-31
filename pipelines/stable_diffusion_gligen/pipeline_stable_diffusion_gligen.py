@@ -640,8 +640,22 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         enable_mid_block: bool = True,
         enable_up_blocks: List[int] = [1, 2, 3],
         return_x0_predictions: bool = False,                          # ADD: return x0 predictions
-        grounding_token_save_dir: Optional[str] = None,               # ADD: save grounding tokens
         gligen_box_idx: Optional[int] = None,                         # ADD: gligen_box_idx
+        save_hidden_states: bool = False,                       # ADD: for visualization
+        save_hidden_states_layers: Optional[list] = None,       # ADD: for visualization
+        hidden_states_save_dir: Optional[str] = None,       # ADD: hidden_states_save_dir
+        save_grounding_tokens: bool = False,                    # ADD: save GLIGEN tokens
+        grounding_token_save_layers: Optional[list] = None,     # ADD: in which layers to save GLIGEN tokens
+        grounding_token_save_dir: Optional[str] = None,         # ADD: save GLIGEN tokens
+        save_qkv: bool = False,                                 # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,                     # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                             # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                               # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                             # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,                       # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
     ):
         r"""
         The call function to the pipeline for generation.
@@ -943,12 +957,27 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                 noise_pred = self.unet(
                     latent_model_input,
                     t,
-                    encoder_hidden_states=prompt_embeds,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    current_iteration=i,
-                    prompt=prompt,                  # ADD: for grounding token analysis (by Yuseung)
-                    grounding_token_save_dir=grounding_token_save_dir,    # ADD: for grounding token analysis (by Yuseung)
-                    gligen_box_idx=gligen_box_idx,  # ADD: for grounding token analysis (by Yuseung)
+                    encoder_hidden_states = prompt_embeds,
+                    cross_attention_kwargs = cross_attention_kwargs,
+                    current_iteration = i,
+                    prompt = prompt,                  # ADD: for grounding token analysis (by Yuseung)
+                    gligen_box_idx = gligen_box_idx,  # ADD: for grounding token analysis (by Yuseung)
+                    save_hidden_states = save_hidden_states,
+                    save_hidden_states_layers = save_hidden_states_layers,
+                    hidden_states_save_dir = hidden_states_save_dir,
+                    # layer_idx = layer_idx,
+                    save_grounding_tokens = save_grounding_tokens,
+                    grounding_token_save_layers = grounding_token_save_layers,
+                    grounding_token_save_dir = grounding_token_save_dir,
+                    save_qkv = save_qkv,
+                    qkv_save_dir = qkv_save_dir,
+                    inject_query = inject_query,
+                    inject_key = inject_key,
+                    inject_value = inject_value,
+                    inject_attn_weight = inject_attn_weight,
+                    qkv_dir = qkv_dir,
+                    use_scaled_dot_product_attention = use_scaled_dot_product_attention,
+                    use_truncated_gsa = use_truncated_gsa,
                 ).sample
 
                 # perform guidance

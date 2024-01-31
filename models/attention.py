@@ -102,50 +102,55 @@ class GatedSelfAttentionDense(nn.Module):
             self, 
             x: torch.Tensor,
             objs: torch.Tensor,
-            layer_name: Optional[str] = None,       # ADD: for visualization
-            current_iteration: Optional[int] = None,        # ADD: for visualization
+            layer_name: Optional[str] = None,                   # ADD: which layer is this GSA in?
+            current_iteration: Optional[int] = None,            # ADD: current iteration in the sampling loop
+            save_grounding_tokens: bool = False,                # ADD: save GLIGEN tokens
+            grounding_token_save_layers: Optional[list] = None, # ADD: in which layers to save GLIGEN tokens
+            grounding_token_save_dir: Optional[str] = None,     # ADD: save GLIGEN tokens
+            save_qkv: bool = False,                     # ADD: save query, key, value (by Yuseung Lee)
+            qkv_save_dir: Optional[str] = None,         # ADD: directory to save query, key, value (by Yuseung Lee)
+            inject_query: bool = False,                 # ADD: inject query (by Yuseung Lee)
+            inject_key: bool = False,                   # ADD: inject key (by Yuseung Lee)
+            inject_value: bool = False,                 # ADD: inject value (by Yuseung Lee)
+            inject_attn_weight: bool = False,           # ADD: inject attention weight (by Yuseung Lee)
+            qkv_dir: Optional[str] = None,              # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+            use_scaled_dot_product_attention: bool = False,  # ADD: use scaled dot product attention (by Yuseung Lee)
+            use_truncated_gsa: bool = False,            # ADD: use truncated GSA (by Yuseung Lee)
         ) -> torch.Tensor:
+        '''
+        [Some notes on the arguments]
+            - grounding_token_save_layers: ["down-block-0-layer-1-0", "down-block-1-layer-1-0", "down-block-2-layer-1-0"]
+        '''
         
         if not self.enabled:
             return x
-        
-        x_vanilla = x.clone().detach()
 
         n_visual = x.shape[1]
         objs = self.linear(objs)
 
-        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
-        SAVE_LAYERS = [
-            "down-block-0-layer-1-0",
-            "down-block-1-layer-1-0",
-            "down-block-2-layer-1-0"
-        ]
-        SAVE_GROUNDING_TOKENS = False
-        SAVE_CONCAT_TOKENS = False
+        ############## NEW (BEGIN) ##############
 
-        if SAVE_GROUNDING_TOKENS and (layer_name in SAVE_LAYERS) and (not self.grounding_token_save_dir is None) and (self.current_timestep == 0):
-            print(f"Saving grounding tokens for {layer_name}...")
-            print(f"objs.shape: {objs.shape}")
-        
+        # NOTE: save GLIGEN grounding tokens for debugging (Yuseung)
+        if (
+            save_grounding_tokens and 
+            (layer_name in grounding_token_save_layers) and
+            (not grounding_token_save_dir is None) and
+            (self.current_timestep == 0)
+        ):
+            print(f"[INFO] Saving grounding tokens for {layer_name}...")
             grounding_tokens = objs.detach().cpu().numpy()
-            # grounding_tokens = grounding_tokens.reshape(grounding_tokens.shape[0], grounding_tokens.shape[1], -1)
 
             prompt_name = self.prompt.replace(" ", "_")
             save_dir = join(self.grounding_token_save_dir, prompt_name)
             os.makedirs(save_dir, exist_ok=True)
 
             np.save(
-                join(
-                    save_dir, 
-                    f"{layer_name}_iter_{self.current_timestep:02d}.npy"
-                ), 
+                join(save_dir, f"{layer_name}_iter_{self.current_timestep:02d}.npy"), 
                 grounding_tokens
             )
-            print(f"Saving grounding tokens for {layer_name}... Done!")
 
-        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
-
-        ###### Modified by Yuseung Lee (for understanding) ######
+        ############## NEW (END) ##############
+            
         # 1. concat visual token and grounding token
         concat_tokens = torch.cat([x, objs], dim=1)
         # concat_tokens_tmp = x
@@ -153,58 +158,30 @@ class GatedSelfAttentionDense(nn.Module):
         # 2. Layer Normalization
         concat_tokens = self.norm1(concat_tokens)
 
-        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
-
-        if (
-            SAVE_CONCAT_TOKENS and 
-            (layer_name in SAVE_LAYERS) and 
-            (self.grounding_token_save_dir is not None) 
-            # and (self.current_timestep == 0)
-            and (current_iteration == 0)
-        ):
-            print(f"Saving concat_tokens for {layer_name}...")
-            print(f"concat_tokens.shape: {concat_tokens.shape}")
-        
-            concat_tokens_npy = concat_tokens.detach().cpu().numpy()
-
-            prompt_name = self.prompt.replace(" ", "_")
-            save_dir = join(self.grounding_token_save_dir, prompt_name)
-            os.makedirs(save_dir, exist_ok=True)
-
-            np.save(
-                join(
-                    save_dir, 
-                    f"{layer_name}_iter_{self.current_timestep:02d}_concat.npy"
-                ), 
-                concat_tokens_npy
-            )
-            print(f"Saving concat_tokens for {layer_name}... Done!")
-
-
-        ############## ADD: save grounding tokens for debugging (Yuseung) ##############
-
         # 3. Self-Attention
         attn_output = self.attn(
             concat_tokens,
-            # current_timestep = self.current_timestep,  # ADD: for visualization
-            current_timestep = current_iteration,  # ADD: for visualization
-            gsa_layer_name = self.name,              # ADD: for visualization
-            )
+            current_timestep = current_iteration,       # ADD: current iteration in the sampling loop
+            gsa_layer_name = self.name,                 # ADD: which layer is this GSA in?
+            save_qkv=save_qkv,
+            qkv_save_dir=qkv_save_dir,
+            inject_query=inject_query,
+            inject_key=inject_key,
+            inject_value=inject_value,
+            inject_attn_weight=inject_attn_weight,
+            qkv_dir=qkv_dir,
+            use_scaled_dot_product_attention=use_scaled_dot_product_attention,
+            use_truncated_gsa=use_truncated_gsa,
+        )
 
         # 4. Split visual token and grounding token
-        
         attn_output_visual = attn_output[:, :n_visual, :]
-        
-        # attn_output_visual = attn_output_tmp
 
         # 5. Add residual
         x = x + self.alpha_attn.tanh() * attn_output_visual
 
         # 6. Feed Forward
         x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
-
-        # if not self.enabled:
-        #     return x_vanilla
 
         return x
 
@@ -416,8 +393,22 @@ class BasicTransformerBlock(nn.Module):
         cross_attention_kwargs: Dict[str, Any] = None,
         class_labels: Optional[torch.LongTensor] = None,
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
-        current_iteration: Optional[int] = None,        # ADD: for visualization
-        hidden_states_save_dir: Optional[str] = None,   # ADD: for visualization
+        current_iteration: Optional[int] = None,                # ADD: for visualization
+        save_hidden_states: bool = False,                       # ADD: for visualization
+        save_hidden_states_layers: Optional[list] = None,       # ADD: for visualization
+        hidden_states_save_dir: Optional[str] = None,           # ADD: for visualization
+        save_grounding_tokens: bool = False,                    # ADD: save GLIGEN tokens
+        grounding_token_save_layers: Optional[list] = None,     # ADD: in which layers to save GLIGEN tokens
+        grounding_token_save_dir: Optional[str] = None,         # ADD: save GLIGEN tokens
+        save_qkv: bool = False,                                 # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,                     # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                             # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                               # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                             # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,                       # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -464,67 +455,33 @@ class BasicTransformerBlock(nn.Module):
         elif self.use_ada_layer_norm_single:
             attn_output = gate_msa * attn_output
 
-        hidden_states_temp = attn_output + hidden_states
-
-        ############################ ADD: for visualization self-attention ############################
-        SAVE_ATTN_MAPS = False
-
-        if SAVE_ATTN_MAPS and self.layer_name is not None and "mid" not in self.layer_name:
-            ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/check_sd_self_attn"
-            os.makedirs(ATTN_SAVE_DIR, exist_ok=True)
-            print(f"BasicTransformerBlock(): layer_name={self.layer_name}")
-            print(f"attn_output: {attn_output.shape}")
-            print(f"hidden_states: {hidden_states.shape}")
-
-            n_tokens_row = int(math.sqrt(attn_output.shape[1]))
-            
-            # 1. Get attention map
-            attn_output_npy = attn_output[1].detach().cpu().numpy()     
-            attn_output_npy = attn_output_npy.reshape(n_tokens_row, n_tokens_row, -1)           # N x N x C
-
-            # 2. Get hidden states (original)
-            hidden_states_npy = hidden_states[1].detach().cpu().numpy()
-            hidden_states_npy = hidden_states_npy.reshape(n_tokens_row, n_tokens_row, -1)       # N x N x C
-
-            # 3. Get hidden states (after self-attention)
-            hidden_states_temp_npy = hidden_states_temp[1].detach().cpu().numpy()
-            hidden_states_temp_npy = hidden_states_temp_npy.reshape(n_tokens_row, n_tokens_row, -1)       # N x N x C
-
-            # 3. save
-            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_attn_output_iter_{current_iteration:02d}.npy"), attn_output_npy)
-            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_before_iter_{current_iteration:02d}.npy"), hidden_states_npy)
-            np.save(join(ATTN_SAVE_DIR, f"{self.layer_name}_hidden_states_after_iter_{current_iteration:02d}.npy"), hidden_states_temp_npy)
-        ############################ ADD: for visualization self-attention ############################
-
         # add self-attn outputs with residual
-        # hidden_states = attn_output + hidden_states
-        hidden_states = hidden_states_temp
+        hidden_states = attn_output + hidden_states
 
         if hidden_states.ndim == 4:
             hidden_states = hidden_states.squeeze(1)
 
-        
-        # ADD: save the hidden_states right before GSA
-        SAVE_HIDDEN_STATES = False
-
-        SAVE_HIDDEN_STATES_LAYERS = [
-            "down-block-0-layer-1-0",
-            "down-block-1-layer-1-0",
-            "down-block-2-layer-1-0"
-        ]
-
-        if SAVE_HIDDEN_STATES and (self.layer_name in SAVE_HIDDEN_STATES_LAYERS) and (current_iteration == 0):
-            print(f"Saving hidden_states for {self.layer_name}...")
+        ######## Save hidden_states for visualization (BEGIN) ########
+        if (
+            save_hidden_states and
+            (self.layer_name in save_hidden_states_layers) and
+            (current_iteration == 0)
+        ):
+            '''
+            - save_hidden_states_layers: [
+                "down-block-0-layer-1-0", 
+                "down-block-1-layer-1-0", 
+                "down-block-2-layer-1-0"
+            ]
+            '''
 
             hidden_states_npy = hidden_states.detach().cpu().numpy()
             np.save(
-                join(
-                    hidden_states_save_dir, 
-                    f"{self.layer_name}_iter_{current_iteration:02d}.npy"
-                ),
+                join(hidden_states_save_dir, f"{self.layer_name}_iter_{current_iteration:02d}.npy"),
                 hidden_states_npy
             )
-            print(f"Saving hidden_states for {self.layer_name}... Done!")
+            print(f"[INFO] Saved hidden_states for {self.layer_name}!")
+        ######## Save hidden_states for visualization (END) ########
 
 
         # 2.5 GLIGEN Control
@@ -534,6 +491,18 @@ class BasicTransformerBlock(nn.Module):
                 gligen_kwargs["objs"],
                 layer_name = self.layer_name,       # ADD: for visualization
                 current_iteration = current_iteration,        # ADD: for visualization
+                save_grounding_tokens = save_grounding_tokens,
+                grounding_token_save_layers = grounding_token_save_layers,
+                grounding_token_save_dir = grounding_token_save_dir,
+                save_qkv = save_qkv,
+                qkv_save_dir = qkv_save_dir,
+                inject_query = inject_query,
+                inject_key = inject_key,
+                inject_value = inject_value,
+                inject_attn_weight = inject_attn_weight,
+                qkv_dir = qkv_dir,
+                use_scaled_dot_product_attention = use_scaled_dot_product_attention,
+                use_truncated_gsa = use_truncated_gsa,
             )
 
         # 3. Cross-Attention

@@ -526,6 +526,18 @@ class Attention(nn.Module):
         current_timestep: Optional[int] = None,     # ADD: for gated self-attention (by Yuseung Lee)
         gsa_layer_name: Optional[str] = None,       # ADD: for gated self-attention (by Yuseung Lee)
         is_cross_attention: bool = False,           # ADD: for cross-attention (by Yuseung Lee)
+        save_cross_attn: bool = False,              # ADD: save cross attention (by Yuseung Lee)
+        cross_attn_save_dir: Optional[str] = None,  # ADD: directory to save cross attention (by Yuseung Lee)
+        save_qkv: bool = False,                     # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,         # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                 # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                   # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                 # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,           # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,              # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,  # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,            # ADD: use truncated GSA (by Yuseung Lee)
+        max_tokens: int = 30,                        # ADD: max tokens for GLIGEN (by Yuseung Lee)
         **cross_attention_kwargs,
     ) -> torch.Tensor:
         r"""
@@ -557,6 +569,18 @@ class Attention(nn.Module):
             is_cross_attention=is_cross_attention,                     # ADD: cross-attention (by Yuseung Lee)
             current_timestep=current_timestep,                         # ADD: gated self-attention (by Yuseung Lee)
             gsa_layer_name=gsa_layer_name,                             # ADD: gated self-attention (by Yuseung Lee)
+            max_tokens=max_tokens,
+            save_cross_attn=save_cross_attn,
+            cross_attn_save_dir=cross_attn_save_dir,
+            save_qkv=save_qkv,
+            qkv_save_dir=qkv_save_dir,
+            inject_query=inject_query,
+            inject_key=inject_key,
+            inject_value=inject_value,
+            inject_attn_weight=inject_attn_weight,
+            qkv_dir=qkv_dir,
+            use_scaled_dot_product_attention=use_scaled_dot_product_attention,
+            use_truncated_gsa=use_truncated_gsa,
             **cross_attention_kwargs,
         )
 
@@ -1242,10 +1266,22 @@ class AttnProcessor2_0:
         attention_mask: Optional[torch.FloatTensor] = None,
         temb: Optional[torch.FloatTensor] = None,
         scale: float = 1.0,
+        max_tokens: int = 30,                        # ADD: max tokens for GLIGEN (by Yuseung Lee)
         is_gated_self_attention: bool = False,      # ADD: gated self-attention (by Yuseung Lee)
         is_cross_attention: bool = False,           # ADD: cross-attention (by Yuseung Lee)
         current_timestep: Optional[int] = None,     # ADD: gated self-attention (by Yuseung Lee)
         gsa_layer_name: Optional[str] = None,       # ADD: gated self-attention (by Yuseung Lee)
+        save_cross_attn: bool = False,              # ADD: save cross attention (by Yuseung Lee)
+        cross_attn_save_dir: Optional[str] = None,  # ADD: directory to save cross attention (by Yuseung Lee)
+        save_qkv: bool = False,                     # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,         # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                 # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                   # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                 # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,           # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,              # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,  # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,            # ADD: use truncated GSA (by Yuseung Lee)
     ) -> torch.FloatTensor:
         residual = hidden_states
         if attn.spatial_norm is not None:
@@ -1278,9 +1314,6 @@ class AttnProcessor2_0:
         elif attn.norm_cross:
             encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
 
-        # if is_gated_self_attention:
-        #     print(f"encoder_hidden_states.shape: {encoder_hidden_states.shape}")
-
         key = attn.to_k(encoder_hidden_states, *args)
         value = attn.to_v(encoder_hidden_states, *args)
 
@@ -1294,180 +1327,85 @@ class AttnProcessor2_0:
 
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
 
-        ############################ Substitute key ############################
-        
-        # IMPORTANT!!!!!! set the seed first
-        SEED = 2
-        ####################################################################################
-
-        SUBSTITUTE_QUERY_KEY = False
-        
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/right_box"
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/left_box"
-        
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/right_box"
-        QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/left_box"
-
-        if SUBSTITUTE_QUERY_KEY and is_gated_self_attention and (current_timestep is not None):
-            new_key_npy = np.load(join(QKV_SRC_DIR, f"key_{gsa_layer_name}_iter_{current_timestep}.npy"))
-            new_key = torch.from_numpy(new_key_npy).to(key.device)
-            key = new_key
-
-            new_query_npy = np.load(join(QKV_SRC_DIR, f"query_{gsa_layer_name}_iter_{current_timestep}.npy"))
-            new_query = torch.from_numpy(new_query_npy).to(query.device)
-            query = new_query
-            print(f"Substituted query, key at iter {current_timestep} from {QKV_SRC_DIR}")
-        
-        ############################ Substitute key ############################
+        ############ Substitute Q, K, V (BEGIN) ############
+        if is_gated_self_attention and (current_timestep is not None):
+            if inject_query:
+                new_query_npy = np.load(
+                    join(qkv_dir, f"query_{gsa_layer_name}_iter_{current_timestep}.npy")
+                )
+                query = torch.from_numpy(new_query_npy).to(query.device)
+                print(f"[INFO] Substituted query at iter {current_timestep} from {qkv_dir}")
             
-        ############################ Substitute value ############################
-        SUBSTITUTE_VALUE = False
-        
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/right_box"
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/left_box"
+            if inject_key:
+                new_key_npy = np.load(
+                    join(qkv_dir, f"key_{gsa_layer_name}_iter_{current_timestep}.npy")
+                )
+                key = torch.from_numpy(new_key_npy).to(key.device)
+                print(f"[INFO] Substituted key at iter {current_timestep} from {qkv_dir}")
+            
+            if inject_value:
+                new_value_npy = np.load(
+                    join(qkv_dir, f"value_{gsa_layer_name}_iter_{current_timestep}.npy")
+                )
+                value = torch.from_numpy(new_value_npy).to(value.device)
+        ############ Substitute Q, K, V (END) ############
 
-        QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/right_box"
-        # QKV_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/left_box"
-
-        if SUBSTITUTE_VALUE and is_gated_self_attention and (current_timestep is not None):
-            new_value_npy = np.load(join(QKV_SRC_DIR, f"key_{gsa_layer_name}_iter_{current_timestep}.npy"))
-            new_value = torch.from_numpy(new_value_npy).to(key.device)
-            value = new_value
-            print(f"Substituted value at iter {current_timestep} from {QKV_SRC_DIR}")
-        
-        ############################ Substitute value ############################
-
-
-        ############################ Save key, value ############################
-        SAVE_QKV = False
-        
-        # QKV_SAVE_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/left_box"
-        # QKV_SAVE_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/right_box"
-
-        QKV_SAVE_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/left_box"
-        # QKV_SAVE_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/right_box"
-
-        # if is_gated_self_attention:
-            # print(f"query: {query.shape} / key: {key.shape} / value: {value.shape}")
-
-        if is_gated_self_attention and SAVE_QKV and (current_timestep is not None):
-            os.makedirs(QKV_SAVE_DIR, exist_ok=True)
+        ############ Save Q, K, V (BEGIN) ############
+        if (
+            is_gated_self_attention and 
+            save_qkv and (current_timestep is not None)
+        ):
+            print(f"[INFO] Saving query, key, value at iter {current_timestep} to {qkv_save_dir}")
+            os.makedirs(qkv_save_dir, exist_ok=True)
 
             # save key
             query_npy = query.detach().cpu().numpy()
             key_npy = key.detach().cpu().numpy()
             value_npy = value.detach().cpu().numpy()
 
-            np.save(join(QKV_SAVE_DIR, f"query_{gsa_layer_name}_iter_{current_timestep}.npy"), query_npy)
-            np.save(join(QKV_SAVE_DIR, f"key_{gsa_layer_name}_iter_{current_timestep}.npy"), key_npy)
-            np.save(join(QKV_SAVE_DIR, f"value_{gsa_layer_name}_iter_{current_timestep}.npy"), value_npy)
-            
-            print(f"Saved query, key, value at iter {current_timestep} to {QKV_SAVE_DIR}")
+            np.save(join(qkv_save_dir, f"query_{gsa_layer_name}_iter_{current_timestep}.npy"), query_npy)
+            np.save(join(qkv_save_dir, f"key_{gsa_layer_name}_iter_{current_timestep}.npy"), key_npy)
+            np.save(join(qkv_save_dir, f"value_{gsa_layer_name}_iter_{current_timestep}.npy"), value_npy)
+        ############ Save Q, K, V (END) ############
 
-        ############################ Save key, value ############################
-
-
-        ############################ Modified by Yuseung Lee ############################
-
-        ############################ Modified by Yuseung Lee ############################
         # from https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
         # Efficient implementation equivalent to the following:
-        
-        save_attn_maps = False
 
-        if is_gated_self_attention and save_attn_maps and current_timestep > -1:
-            # SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/attention_map"
-            SAVE_DIR = "/scratch/yuseung07/attention_map"
-            os.makedirs(SAVE_DIR, exist_ok=True)
-
-            N_GROUND_TOKENS = 30            # number of grounding tokens (padded)
-            N_GROUND_TOKENS_VALID = 2       # actual number of bboxes
-            
-            assert attention_mask is None
-            assert current_timestep is not None
-
-            L, S = query.size(-2), key.size(-2)
-            scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
-            attn_bias = torch.zeros(L, S, dtype=query.dtype).to(query.device)
-            
-            attn_weight = query @ key.transpose(-2, -1) * scale_factor
-            attn_weight += attn_bias
-
-            attn_weight = torch.softmax(attn_weight, dim=-1)
-
-            # NOTE: fix num. of grounding tokens to 30
-            n_visual_tokens = attn_weight.shape[-1] - N_GROUND_TOKENS
-
-            # TODO: get bounding boxes as an input!
-            boxes = [
-                [0.1387, 0.2051, 0.4277, 0.7090], 
-                [0.4980, 0.4355, 0.8516, 0.7266]
-            ]
-            
-            for idx in range(N_GROUND_TOKENS_VALID):
-                attn_map = attn_weight[:, :, :, n_visual_tokens + idx]     # (batch, num_heads, seq_len)
-                attn_map = attn_map[:, :, :n_visual_tokens]             # (batch, num_heads, num_visual_tokens)
-
-                B, N_HEADS, _ = attn_map.shape
-                n_visual_tokens_row = int(math.sqrt(n_visual_tokens))
-                
-                attn_map = attn_map.reshape(B, N_HEADS, n_visual_tokens_row, n_visual_tokens_row)
-                attn_map = torch.mean(attn_map, dim=1, keepdim=True)                                # (batch, num_visual_tokens, num_visual_tokens)
-                attn_map = attn_map.repeat(1, 3, 1, 1)                                              # (batch, 3, num_visual_tokens, num_visual_tokens)
-                attn_map = attn_map[1]
-
-                # save attention map
-                attn_map = attn_map.permute(1, 2, 0).cpu().detach().numpy()
-                # attn_map = attn_map / attn_map.max()
-                attn_map = attn_map * 255.0
-                attn_map = attn_map.astype(np.uint8)
-                attn_map = Image.fromarray(attn_map).resize((512, 512), Image.NEAREST)
-                attn_map = add_bboxes(attn_map, boxes, color=(255, 0, 0), width=2)
-                attn_map.save(join(SAVE_DIR, f"attn_map_layer_{gsa_layer_name}_token_{idx:02d}_iter_{current_timestep}.png"))
-
-        ############################ Modified by Yuseung Lee ############################
-
-        ############################ Modified by Yuseung Lee ############################
-        USE_DOT_PRODUCT = False
-
-        if USE_DOT_PRODUCT:
+        ############ Calculate attn_weight (BEGIN) ############
+        if use_scaled_dot_product_attention:
             # TODO: add support for attn.scale when we move to Torch 2.1
             hidden_states = F.scaled_dot_product_attention(
                 query, key, value, 
                 attn_mask=attention_mask, dropout_p=0.0, is_causal=False
             )
         else:
-            # NOTE: not using F.scaled_dot_product_attention()
+            # NOTE: NOT using F.scaled_dot_product_attention()
             L, S = query.size(-2), key.size(-2)
             
             # Efficient implementation equivalent to the following:
             is_causal = True
             
             attn_mask = torch.ones(
-                L, S, dtype=torch.bool, device=query.device
-                ).tril(diagonal=0) if is_causal else attn_mask
+                L, S, 
+                dtype=torch.bool, 
+                device=query.device
+            ).tril(diagonal=0) if is_causal else attn_mask
             
             attn_mask = attn_mask.masked_fill(~attn_mask, -float('inf')) if attn_mask.dtype==torch.bool else attn_mask
             
             # compute attention weights
-            # 2 x 8 x N x N (N: num. of image tokens + num. of grounding tokens for GLIGEN)
-
             key_t = key.transpose(-2, -1)
 
-            MAX_TOKENS = 30
-            # TRUNCATE_GSA = False
-            TRUNCATE_GSA = False
-
-            if is_gated_self_attention and TRUNCATE_GSA:
+            if is_gated_self_attention and use_truncated_gsa:
                 '''
-                    - query: torch.Size([2, 8, 4096, 40])
-                    - key_t: torch.Size([2, 8, 40, 4096])
+                    - query: torch.Size([2, 8, N x N, C])
+                    - key_t: torch.Size([2, 8, C, N x N])
                 '''
                 # query: only visual tokens
-                query_trunc = query[:, :, :query.shape[2] - MAX_TOKENS, :]       # 2 x 8 x (N x N) x C
+                query_trunc = query[:, :, :query.shape[2] - max_tokens, :]       # 2 x 8 x (N x N) x C
 
                 # key_t_trunc: only grounding tokens
-                key_t_trunc = key_t[:, :, :, -MAX_TOKENS:]                       # 2 x 8 x C x MAX_TOKENS
+                key_t_trunc = key_t[:, :, :, -max_tokens:]                       # 2 x 8 x C x MAX_TOKENS
 
                 # dot product
                 qk_transpose = query_trunc @ key_t_trunc                        # 2 x 8 x (N x N) x MAX_TOKENS
@@ -1480,43 +1418,34 @@ class AttnProcessor2_0:
                 # dot product
                 qk_transpose = query @ key_t
 
+            # softmax
             attn_weight = torch.softmax(
                 (qk_transpose / math.sqrt(query.size(-1))) + attn_mask, 
                 dim=-1
             )
             attn_weight = torch.dropout(attn_weight, 0.0, train=True)
-
-            ############################ Substitute attn_weight ############################
-            SUBSTITUTE_ATTN_WEIGHT = True
             
-            # ATTN_WEIGHT_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/right_box_new_attn_weight"
-            # ATTN_WEIGHT_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/left_box_new_attn_weight"
-            # ATTN_WEIGHT_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_dog_in_a_park/seed_{SEED}/right_box_original_attn_weight"
-            ATTN_WEIGHT_SRC_DIR = f"/home/yuseung07/proj_comp_gen/gligen_analysis/results/key_value_swap/a_cup_on_a_wooden_desk/seed_{SEED}/left_box_new_attn_weight"
+            ############ Calculate attn_weight (END) ############
 
-            if SUBSTITUTE_ATTN_WEIGHT and is_gated_self_attention and (current_timestep is not None):
-                new_attn_weight = np.load(join(ATTN_WEIGHT_SRC_DIR, f"attn_weight_{gsa_layer_name}_iter_{current_timestep}.npy"))
-                new_attn_weight = torch.from_numpy(new_attn_weight).to(key.device)
-                attn_weight = new_attn_weight
+            ############ Inject attn_weight (BEGIN) ############
+            if (
+                is_gated_self_attention and
+                inject_attn_weight and (current_timestep is not None)
+            ):
+                new_attn_weight_npy = np.load(join(qkv_dir, f"attn_weight_{gsa_layer_name}_iter_{current_timestep}.npy"))
+                attn_weight = torch.from_numpy(new_attn_weight_npy).to(attn_weight.device)
                 
-                print(f"Substituted attn_weight at iter {current_timestep} from {ATTN_WEIGHT_SRC_DIR}")
-            
-            ############################ Substitute attn_weight ############################
+                print(f"[INFO] Injected attn_weight at iter {current_timestep} from {qkv_dir}")
 
+            ############ Inject attn_weight (END) ############
 
-            ############################ ADD: Cross-Attention Visualization (Yuseung) ############################
-
-            SAVE_CROSS_ATTN = False
-            USE_GSA = False
-
-            if USE_GSA:
-                CROSS_ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/with_gsa"
-            else:
-                CROSS_ATTN_SAVE_DIR = "/home/yuseung07/proj_comp_gen/gligen_analysis/results/cross_attn_map/without_gsa"
-            
-            if is_cross_attention and SAVE_CROSS_ATTN and (current_timestep is not None):
+            ############ Save Cross-Attention (BEGIN) ############
+            if (
+                is_cross_attention and
+                save_cross_attn and (current_timestep is not None)
+            ):
                 _, _, C, _ = attn_weight.shape
-                os.makedirs(CROSS_ATTN_SAVE_DIR, exist_ok=True)
+                os.makedirs(cross_attn_save_dir, exist_ok=True)
 
                 if C == 4096:
                     cross_attn_layer = "down-block-0-layer-1-0_iter_00"
@@ -1528,32 +1457,17 @@ class AttnProcessor2_0:
                     raise ValueError(f"Invalid channel size: {C}")
 
                 attn_weight_npy = attn_weight.detach().cpu().numpy()
-                
                 np.save(
-                    join(CROSS_ATTN_SAVE_DIR, f"cross_attn_weight_{cross_attn_layer}.npy"),
+                    join(cross_attn_save_dir, f"cross_attn_weight_{cross_attn_layer}.npy"),
                     attn_weight_npy
                 )
-                print(f"Saved cross-attention weight at {join(CROSS_ATTN_SAVE_DIR, f'cross_attn_weight_{cross_attn_layer}.npy')}")
-
-        ############################ ADD: Cross-Attention Visualization (Yuseung) ############################
-
-            # TODO: REMOVE THIS!!!!
-            TRUNCATE_GSA = True
-
-            if is_gated_self_attention and TRUNCATE_GSA:
-                attn_weight = attn_weight[:, :, :, -MAX_TOKENS:]
-
-                # value_trunc: only grounding tokens
-                value_trunc = value[:, :, -MAX_TOKENS:, :]       # 2 x B x MAX_TOKENS x C
-
-                print("use truncated attn_weight")
-                # print(f"attn_weight.shape: {attn_weight.shape}")
-                # print(f"value_trunc.shape: {value_trunc.shape}")
-
-                # hidden_states: only visual tokens
-                hidden_states = attn_weight @ value_trunc
-
+                print(f"[INFO] Saved Cross-Attention at {join(cross_attn_save_dir, f'cross_attn_weight_{cross_attn_layer}.npy')}")
+            ############ Save Cross-Attention (END) ############
+                
+            ############ Multiply attn_weight & value (BEGIN) ############
+            if is_gated_self_attention and use_truncated_gsa:
                 '''                
+                [Example]
                     # ORIGINAL
                     # attn_weight: 2 x 8 x 4096 x 4096
                     # value_trunc: 2 x 8 x 4096 x 40
@@ -1564,18 +1478,23 @@ class AttnProcessor2_0:
                     # value_trunc: 2 x 8 x 30 x 40
                     # hidden_states: 2 x 8 x 4096 x 40
                 '''
+                print("[INFO] Using truncated GSA")
+                attn_weight = attn_weight[:, :, :, -max_tokens:]
+
+                # value_trunc: only grounding tokens
+                value_trunc = value[:, :, -max_tokens:, :]       # 2 x B x MAX_TOKENS x C
+
+                # hidden_states: only visual tokens
+                hidden_states = attn_weight @ value_trunc
             else:
                 hidden_states = attn_weight @ value
-        ############################ Modified by Yuseung Lee ############################
+            ############ Multiply attn_weight & value (BEGIN) ############
 
         hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * head_dim)
         hidden_states = hidden_states.to(query.dtype)
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states, *args)
-
-        # if is_gated_self_attention:
-        #     print(f"final hidden_states.shape: {hidden_states.shape}")
 
         # dropout
         hidden_states = attn.to_out[1](hidden_states)

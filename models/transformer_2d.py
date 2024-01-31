@@ -260,7 +260,21 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         encoder_attention_mask: Optional[torch.Tensor] = None,
         return_dict: bool = True,
         current_iteration: Optional[int] = None,
+        save_hidden_states: bool = False,                       # ADD: for visualization
+        save_hidden_states_layers: Optional[list] = None,       # ADD: for visualization
         hidden_states_save_dir: Optional[str] = None,
+        save_grounding_tokens: bool = False,                    # ADD: save GLIGEN tokens
+        grounding_token_save_layers: Optional[list] = None,     # ADD: in which layers to save GLIGEN tokens
+        grounding_token_save_dir: Optional[str] = None,         # ADD: save GLIGEN tokens
+        save_qkv: bool = False,                                 # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,                     # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                             # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                               # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                             # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,                       # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -396,16 +410,31 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     **ckpt_kwargs,
                 )
             else:
+                # NOTE: block: BasicTransformerBlock()
                 hidden_states = block(
                     hidden_states,
-                    attention_mask=attention_mask,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=encoder_attention_mask,
-                    timestep=timestep,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    class_labels=class_labels,
-                    current_iteration=current_iteration,
-                    hidden_states_save_dir=hidden_states_save_dir,
+                    attention_mask = attention_mask,
+                    encoder_hidden_states = encoder_hidden_states,
+                    encoder_attention_mask = encoder_attention_mask,
+                    timestep = timestep,
+                    cross_attention_kwargs = cross_attention_kwargs,
+                    class_labels = class_labels,
+                    current_iteration = current_iteration,
+                    save_hidden_states = save_hidden_states,
+                    save_hidden_states_layers = save_hidden_states_layers,
+                    hidden_states_save_dir = hidden_states_save_dir,
+                    save_grounding_tokens = save_grounding_tokens,
+                    grounding_token_save_layers = grounding_token_save_layers,
+                    grounding_token_save_dir = grounding_token_save_dir,
+                    save_qkv = save_qkv,
+                    qkv_save_dir = qkv_save_dir,
+                    inject_query = inject_query,
+                    inject_key = inject_key,
+                    inject_value = inject_value,
+                    inject_attn_weight = inject_attn_weight,
+                    qkv_dir = qkv_dir,
+                    use_scaled_dot_product_attention = use_scaled_dot_product_attention,
+                    use_truncated_gsa = use_truncated_gsa,
                 )
 
         # 3. Output

@@ -861,8 +861,22 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         return_dict: bool = True,
         current_iteration: Optional[int] = None,        # ADD: for debugging (Yuseung)
         prompt: Optional[str] = None,                   # ADD: for debugging (Yuseung)
-        grounding_token_save_dir: Optional[str] = None, # ADD: for debugging (Yuseung)
         gligen_box_idx: Optional[int] = None,           # ADD: for debugging (Yuseung)
+        save_hidden_states: bool = False,                       # ADD: for visualization
+        save_hidden_states_layers: Optional[list] = None,       # ADD: for visualization
+        hidden_states_save_dir: Optional[str] = None,       # ADD: hidden_states_save_dir
+        save_grounding_tokens: bool = False,                    # ADD: save GLIGEN tokens
+        grounding_token_save_layers: Optional[list] = None,     # ADD: in which layers to save GLIGEN tokens
+        grounding_token_save_dir: Optional[str] = None,         # ADD: save GLIGEN tokens
+        save_qkv: bool = False,                                 # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,                     # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                             # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                               # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                             # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,                       # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1121,21 +1135,10 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             down_intrablock_additional_residuals = down_block_additional_residuals
             is_adapter = True
         
-        #################################### DOWNSAMPLE BLOCKS (ENCODER) ####################################
-        
-        # ADD: ablation flipping experiment to check where the spatial information emerges
-        FLIP_LAYERS = []
-        FLIP_THRES = 1
-        REFLIP = False # True
-
+        ############### DOWNSAMPLE BLOCKS (ENCODER) ###############
         down_block_res_samples = (sample,)
 
         for layer_idx, downsample_block in enumerate(self.down_blocks):
-        # for downsample_block in self.down_blocks:
-            
-            if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES:
-                sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
-
             if hasattr(downsample_block, "has_cross_attention") and downsample_block.has_cross_attention:
                 # For t2i-adapter CrossAttnDownBlock2D
                 additional_residuals = {}
@@ -1143,28 +1146,33 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     additional_residuals["additional_residuals"] = down_intrablock_additional_residuals.pop(0)
 
                 sample, res_samples = downsample_block(
-                    hidden_states=sample,
-                    temb=emb,
-                    encoder_hidden_states=encoder_hidden_states,
-                    attention_mask=attention_mask,
-                    cross_attention_kwargs=cross_attention_kwargs,
-                    encoder_attention_mask=encoder_attention_mask,
-                    current_iteration=current_iteration,
-                    hidden_states_save_dir=grounding_token_save_dir,
-                    layer_idx=layer_idx,
+                    hidden_states = sample,
+                    temb = emb,
+                    encoder_hidden_states = encoder_hidden_states,
+                    attention_mask = attention_mask,
+                    cross_attention_kwargs = cross_attention_kwargs,
+                    encoder_attention_mask = encoder_attention_mask,
+                    current_iteration = current_iteration,
+                    save_hidden_states = save_hidden_states,
+                    save_hidden_states_layers = save_hidden_states_layers,
+                    hidden_states_save_dir = hidden_states_save_dir,
+                    layer_idx = layer_idx,
+                    save_grounding_tokens = save_grounding_tokens,
+                    grounding_token_save_layers = grounding_token_save_layers,
+                    grounding_token_save_dir = grounding_token_save_dir,
+                    save_qkv = save_qkv,
+                    qkv_save_dir = qkv_save_dir,
+                    inject_query = inject_query,
+                    inject_key = inject_key,
+                    inject_value = inject_value,
+                    inject_attn_weight = inject_attn_weight,
+                    qkv_dir = qkv_dir,
+                    use_scaled_dot_product_attention = use_scaled_dot_product_attention,
+                    use_truncated_gsa = use_truncated_gsa,
                     **additional_residuals,
-                )
-                
-                if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES and REFLIP:
-                    sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
-                    res_samples = tuple(torch.flip(res_sample, dims=[-1]) for res_sample in res_samples)
-                    
+                )                    
             else:
                 sample, res_samples = downsample_block(hidden_states=sample, temb=emb, scale=lora_scale)
-
-                if layer_idx in FLIP_LAYERS and current_iteration < FLIP_THRES and REFLIP:
-                    sample = torch.flip(sample, dims=[-1])      # flip along width dimension!
-                    res_samples = tuple(torch.flip(res_sample, dims=[-1]) for res_sample in res_samples)
 
                 if is_adapter and len(down_intrablock_additional_residuals) > 0:
                     sample += down_intrablock_additional_residuals.pop(0)

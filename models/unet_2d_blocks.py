@@ -119,6 +119,7 @@ def get_down_block(
     elif down_block_type == "CrossAttnDownBlock2D":
         if cross_attention_dim is None:
             raise ValueError("cross_attention_dim must be specified for CrossAttnDownBlock2D")
+        
         return CrossAttnDownBlock2D(
             num_layers=num_layers,
             transformer_layers_per_block=transformer_layers_per_block,
@@ -736,6 +737,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
     ) -> torch.FloatTensor:
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
         hidden_states = self.resnets[0](hidden_states, temb, scale=lora_scale)
+        
         for attn, resnet in zip(self.attentions, self.resnets[1:]):
             if self.training and self.gradient_checkpointing:
 
@@ -749,6 +751,7 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     return custom_forward
 
                 ckpt_kwargs: Dict[str, Any] = {"use_reentrant": False} if is_torch_version(">=", "1.11.0") else {}
+                
                 hidden_states = attn(
                     hidden_states,
                     encoder_hidden_states=encoder_hidden_states,
@@ -1128,7 +1131,21 @@ class CrossAttnDownBlock2D(nn.Module):
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         current_iteration: Optional[int] = None,            # ADD: current_iteration
         layer_idx: Optional[int] = None,
+        save_hidden_states: bool = False,                       # ADD: for visualization
+        save_hidden_states_layers: Optional[list] = None,       # ADD: for visualization
         hidden_states_save_dir: Optional[str] = None,       # ADD: hidden_states_save_dir
+        save_grounding_tokens: bool = False,                    # ADD: save GLIGEN tokens
+        grounding_token_save_layers: Optional[list] = None,     # ADD: in which layers to save GLIGEN tokens
+        grounding_token_save_dir: Optional[str] = None,         # ADD: save GLIGEN tokens
+        save_qkv: bool = False,                                 # ADD: save query, key, value (by Yuseung Lee)
+        qkv_save_dir: Optional[str] = None,                     # ADD: directory to save query, key, value (by Yuseung Lee)
+        inject_query: bool = False,                             # ADD: inject query (by Yuseung Lee)
+        inject_key: bool = False,                               # ADD: inject key (by Yuseung Lee)
+        inject_value: bool = False,                             # ADD: inject value (by Yuseung Lee)
+        inject_attn_weight: bool = False,                       # ADD: inject attention weight (by Yuseung Lee)
+        qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
+        use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
+        use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
         additional_residuals: Optional[torch.FloatTensor] = None,
     ) -> Tuple[torch.FloatTensor, Tuple[torch.FloatTensor, ...]]:
         output_states = ()
@@ -1177,7 +1194,21 @@ class CrossAttnDownBlock2D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                     current_iteration=current_iteration,            # ADD: current_iteration
-                    hidden_states_save_dir=hidden_states_save_dir,  # ADD: hidden_states_save_dir
+                    save_hidden_states = save_hidden_states,
+                    save_hidden_states_layers = save_hidden_states_layers,
+                    hidden_states_save_dir = hidden_states_save_dir,  # ADD: hidden_states_save_dir
+                    save_grounding_tokens = save_grounding_tokens,
+                    grounding_token_save_layers = grounding_token_save_layers,
+                    grounding_token_save_dir = grounding_token_save_dir,
+                    save_qkv = save_qkv,
+                    qkv_save_dir = qkv_save_dir,
+                    inject_query = inject_query,
+                    inject_key = inject_key,
+                    inject_value = inject_value,
+                    inject_attn_weight = inject_attn_weight,
+                    qkv_dir = qkv_dir,
+                    use_scaled_dot_product_attention = use_scaled_dot_product_attention,
+                    use_truncated_gsa = use_truncated_gsa,
                 )[0]
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
