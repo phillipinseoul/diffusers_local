@@ -275,6 +275,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
         qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
         use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
         use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
+        use_learnable_alpha: bool = False,                      # ADD: use learnable alpha (by Yuseung Lee)
+        learnable_alpha: Optional[torch.Tensor] = None,          # ADD: learnable alpha (by Yuseung Lee)
     ):
         """
         The [`Transformer2DModel`] forward method.
@@ -435,6 +437,8 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
                     qkv_dir = qkv_dir,
                     use_scaled_dot_product_attention = use_scaled_dot_product_attention,
                     use_truncated_gsa = use_truncated_gsa,
+                    use_learnable_alpha = use_learnable_alpha,
+                    learnable_alpha = learnable_alpha,
                 )
 
         # 3. Output

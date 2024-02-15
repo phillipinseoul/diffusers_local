@@ -965,6 +965,7 @@ class StableDiffusionGLIGENTextImagePipeline(DiffusionPipeline):
 
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
+        
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # ADD: GLIGEN scheduled sampling (by Yuseung Lee)

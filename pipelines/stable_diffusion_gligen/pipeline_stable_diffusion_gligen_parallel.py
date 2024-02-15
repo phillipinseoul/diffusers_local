@@ -669,10 +669,6 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
         use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
         use_learnable_alpha: bool = False,                      # ADD: use learnable alpha (by Yuseung Lee)
-        alpha_init: float = 1.0,                                # ADD: alpha init (by Yuseung Lee)
-        alpha_grad_weight: float = 1.0,                         # ADD: alpha grad weight (by Yuseung Lee)
-        alpha_update_prompt: Optional[str] = None,              # ADD: alpha update prompt (by Yuseung Lee)
-        return_alpha_history: bool = False,                     # ADD: return alpha history (by Yuseung Lee)
     ):
         r"""
         The call function to the pipeline for generation.
@@ -874,35 +870,6 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
             "masks": masks
         }
 
-        # Prepare latent variables for GLIGEN inpainting
-        if gligen_inpaint_image is not None:
-            # if the given input image is not of the same size as expected by VAE
-            # center crop and resize the input image to expected shape
-            if gligen_inpaint_image.size != (self.vae.sample_size, self.vae.sample_size):
-                gligen_inpaint_image = self.target_size_center_crop(gligen_inpaint_image, self.vae.sample_size)
-            # Convert a single image into a batch of images with a batch size of 1
-            # The resulting shape becomes (1, C, H, W), where C is the number of channels,
-            # and H and W are the height and width of the image.
-            # scales the pixel values to a range [-1, 1]
-            gligen_inpaint_image = self.image_processor.preprocess(gligen_inpaint_image)
-            gligen_inpaint_image = gligen_inpaint_image.to(dtype=self.vae.dtype, device=self.vae.device)
-            # Run AutoEncoder to get corresponding latents
-            gligen_inpaint_latent = self.vae.encode(gligen_inpaint_image).latent_dist.sample()
-            gligen_inpaint_latent = self.vae.config.scaling_factor * gligen_inpaint_latent
-            # Generate an inpainting mask
-            # pixel value = 0, where the object is present (defined by bounding boxes above)
-            #               1, everywhere else
-            gligen_inpaint_mask = self.draw_inpaint_mask_from_boxes(gligen_boxes, gligen_inpaint_latent.shape[2:])
-            gligen_inpaint_mask = gligen_inpaint_mask.to(
-                dtype=gligen_inpaint_latent.dtype, device=gligen_inpaint_latent.device
-            )
-            gligen_inpaint_mask = gligen_inpaint_mask[None, None]
-            gligen_inpaint_mask_addition = torch.cat(
-                (gligen_inpaint_latent * gligen_inpaint_mask, gligen_inpaint_mask), dim=1
-            )
-            # Convert a single mask into a batch of masks with a batch size of 1
-            gligen_inpaint_mask_addition = gligen_inpaint_mask_addition.expand(repeat_batch, -1, -1, -1).clone()
-
         # ADD: enable specific unet blocks
         # self.enable_fuser(True)
         self.enable_fuser(
@@ -918,11 +885,17 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
 
         # ------------ ADD: set learnable alpha ------------ #
         if use_learnable_alpha:
-            learnable_alpha = torch.nn.Parameter(torch.tensor([alpha_init], device=device))
+            alpha_init = torch.tensor([0.5], device=device)
+            learnable_alpha = torch.nn.Parameter(alpha_init)
+            # learnable_alpha.requires_grad = True
             print(f"learnable_alpha initialized: {learnable_alpha}")
 
+            # self.clip_score.to(device)
+            # print(f"self.clip_score: {self.clip_score.device}")
             if self.clip_model.device != device:
                 self.clip_model.to(device)
+            # if self.clip_tokenizer.device != device:
+            #     self.clip_tokenizer.to(device)
         # -------------------------------------------------- #
 
         x0_predictions = []
@@ -930,9 +903,6 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         
-        alpha_history = []
-        clip_similarity_history = []
-
         # ------------------------- SAMPLING LOOP ------------------------- #
         with torch.autocast("cuda"):
             with self.progress_bar(total=num_inference_steps) as progress_bar:
@@ -978,8 +948,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     if use_learnable_alpha:
                         learnable_alpha.requires_grad = True
                         latents.requires_grad = True
-                        # print(f"learnable_alpha: {learnable_alpha.requires_grad}")
-                        # print(f"latents: {latents.requires_grad}")
+                        print(f"learnable_alpha: {learnable_alpha.requires_grad}")
+                        print(f"latents: {latents.requires_grad}")
                     # -------------------------------------------------- #
 
                     # expand the latents if we are doing classifier free guidance
@@ -1018,6 +988,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                         learnable_alpha = learnable_alpha,
                     ).sample
 
+                    print(f"noise_pred: {noise_pred.requires_grad}")
+
                     # perform guidance
                     if do_classifier_free_guidance:
                         noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
@@ -1029,6 +1001,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                     out = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs)
                     latents = out.prev_sample
 
+                    print(f"latents: {latents.requires_grad}")
+
                     # ADD: return x0 predictions
                     x0_prediction = out.pred_original_sample        # (B, 4, 64, 64)
 
@@ -1037,40 +1011,69 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                         x0_prediction / self.vae.config.scaling_factor,
                         return_dict = False
                     )[0]
+                    print(f"x0_decoded: {x0_decoded.shape}")
 
+                    # x0_decoded = torch.clamp(x0_decoded[0], min=-1, max=1) * 0.5 + 0.5        # 3 x 512 x 512
                     x0_decoded = torch.clamp(x0_decoded, min=-1, max=1) * 0.5 + 0.5        # 1 x 3 x 512 x 512
+                    
+                    print(f"[INFO] x0_decoded: {x0_decoded.requires_grad}")
+
+                    # x0_decoded = x0_decoded * 255.0
+
+                    print(f"[INFO] x0_decoded: {x0_decoded.requires_grad}")
+
+                    # x0_decoded = x0_decoded.type(torch.int64)
+
+                    print(f"[INFO] x0_decoded: {x0_decoded.dtype}")
+                    print(f"x0_decoded: {x0_decoded.requires_grad}")
+
+                    # Compute loss
+                    prompt = "a dog in a forest"
+                    # clip_score = self.clip_score(x0_decoded, prompt)
 
                     # compute CLIP features
                     # resize image
                     x0_decoded = T.Resize((224, 224))(x0_decoded)
+                    print(f"x0_decoded: {x0_decoded.shape}")
 
                     image_features = self.clip_model.get_image_features(pixel_values = x0_decoded)
-                    text_inputs = self.clip_tokenizer([alpha_update_prompt], padding=True, return_tensors="pt")
+                    
+                    text_inputs = self.clip_tokenizer([prompt], padding=True, return_tensors="pt")
+                    
+                    # print(f"text_inputs: {text_inputs.device}")
+
                     text_inputs = {k: v.to(self.clip_model.device) for k, v in text_inputs.items()}
+
                     text_features = self.clip_model.get_text_features(**text_inputs)
+
+                    print(f"image_features: {image_features.shape} / requires_grad: {image_features.requires_grad}")
+                    print(f"text_features: {text_features.shape} / requires_grad: {text_features.requires_grad}")
 
                     # compute CLIP score
                     image_features = image_features / image_features.norm(p=2, dim=-1, keepdim=True)
                     text_features = text_features / text_features.norm(p=2, dim=-1, keepdim=True)
                     
                     clip_similarity = torch.matmul(text_features, image_features.t())
-                    clip_loss = 1.0 - clip_similarity
 
-                    # ADD: save alpha and clip similarity
-                    alpha_history.append(learnable_alpha.item())
-                    clip_similarity_history.append(clip_similarity.item())
-                    
+                    print(f"clip_similarity: {clip_similarity.dtype} / requires_grad: {clip_similarity.requires_grad}")
+                    print(f"learnable_alpha: {learnable_alpha.dtype}")
+
                     # Backprop
                     norm_grad = grad(
-                        outputs = clip_loss, 
+                        outputs = clip_similarity, 
                         inputs = learnable_alpha,
                         # allow_unused = True
                     )[0]
+                    print(f"norm_grad: {norm_grad}")
 
                     # update alpha scale
                     with torch.no_grad():
-                        learnable_alpha = learnable_alpha - alpha_grad_weight * norm_grad
+                        GRAD_WEIGHT = 0.1
+                        learnable_alpha = learnable_alpha - GRAD_WEIGHT * norm_grad
+
                         learnable_alpha = torch.clamp(learnable_alpha, min=0.0, max=1.0)
+                        
+                        print(f"learnable_alpha: {learnable_alpha}")
                         latents = latents.detach()
                      
                     torch.cuda.empty_cache()
@@ -1126,9 +1129,6 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
 
         if return_x0_predictions:
             return (StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), x0_predictions_pil)
-        elif return_alpha_history:
-            return (StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept), 
-                    alpha_history, clip_similarity_history)
         else:
             return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
 

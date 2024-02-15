@@ -116,6 +116,8 @@ class GatedSelfAttentionDense(nn.Module):
             qkv_dir: Optional[str] = None,              # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
             use_scaled_dot_product_attention: bool = False,  # ADD: use scaled dot product attention (by Yuseung Lee)
             use_truncated_gsa: bool = False,            # ADD: use truncated GSA (by Yuseung Lee)
+            use_learnable_alpha: bool = False,          # ADD: use learnable alpha (by Yuseung Lee)
+            learnable_alpha: Optional[torch.Tensor] = None,               # ADD: learnable alpha (by Yuseung Lee)
         ) -> torch.Tensor:
         '''
         [Some notes on the arguments]
@@ -161,7 +163,8 @@ class GatedSelfAttentionDense(nn.Module):
         # 3. Self-Attention
         attn_output = self.attn(
             concat_tokens,
-            current_timestep = current_iteration,       # ADD: current iteration in the sampling loop
+            # current_timestep = current_iteration,       # ADD: current iteration in the sampling loop
+            current_timestep = self.current_timestep,
             gsa_layer_name = self.name,                 # ADD: which layer is this GSA in?
             save_qkv=save_qkv,
             qkv_save_dir=qkv_save_dir,
@@ -177,11 +180,15 @@ class GatedSelfAttentionDense(nn.Module):
         # 4. Split visual token and grounding token
         attn_output_visual = attn_output[:, :n_visual, :]
 
-        # 5. Add residual
-        x = x + self.alpha_attn.tanh() * attn_output_visual
+        if use_learnable_alpha:
+            x = x + learnable_alpha * self.alpha_attn.tanh() * attn_output_visual
+            x = x + learnable_alpha * self.alpha_dense.tanh() * self.ff(self.norm2(x))    
+        else:
+            # 5. Add residual
+            x = x + self.alpha_attn.tanh() * attn_output_visual
 
-        # 6. Feed Forward
-        x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
+            # 6. Feed Forward
+            x = x + self.alpha_dense.tanh() * self.ff(self.norm2(x))
 
         return x
 
@@ -409,6 +416,8 @@ class BasicTransformerBlock(nn.Module):
         qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
         use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
         use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
+        use_learnable_alpha: bool = False,                       # ADD: use learnable alpha (by Yuseung Lee)
+        learnable_alpha: Optional[torch.Tensor] = None,         # ADD: learnable alpha (by Yuseung Lee)
     ) -> torch.FloatTensor:
         # Notice that normalization is always applied before the real computation in the following blocks.
         # 0. Self-Attention
@@ -503,6 +512,8 @@ class BasicTransformerBlock(nn.Module):
                 qkv_dir = qkv_dir,
                 use_scaled_dot_product_attention = use_scaled_dot_product_attention,
                 use_truncated_gsa = use_truncated_gsa,
+                use_learnable_alpha = use_learnable_alpha,
+                learnable_alpha = learnable_alpha,
             )
 
         # 3. Cross-Attention

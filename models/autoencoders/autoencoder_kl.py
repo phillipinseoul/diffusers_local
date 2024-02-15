@@ -267,7 +267,12 @@ class AutoencoderKL(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
 
         return AutoencoderKLOutput(latent_dist=posterior)
 
-    def _decode(self, z: torch.FloatTensor, return_dict: bool = True) -> Union[DecoderOutput, torch.FloatTensor]:
+    def _decode(
+            self, 
+            z: torch.FloatTensor, 
+            return_dict: bool = True
+        ) -> Union[DecoderOutput, torch.FloatTensor]:
+
         if self.use_tiling and (z.shape[-1] > self.tile_latent_min_size or z.shape[-2] > self.tile_latent_min_size):
             return self.tiled_decode(z, return_dict=return_dict)
 
@@ -279,7 +284,7 @@ class AutoencoderKL(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
 
         return DecoderOutput(sample=dec)
 
-    @apply_forward_hook
+    # @apply_forward_hook
     def decode(
         self, z: torch.FloatTensor, return_dict: bool = True, generator=None
     ) -> Union[DecoderOutput, torch.FloatTensor]:

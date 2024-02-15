@@ -877,6 +877,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         qkv_dir: Optional[str] = None,                          # ADD: directory of query, key, value, attn weight (by Yuseung Lee)
         use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
         use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
+        use_learnable_alpha: bool = False,                      # ADD: use learnable alpha (by Yuseung Lee)
+        learnable_alpha: Optional[torch.Tensor] = None,         # ADD: learnable alpha (by Yuseung Lee)
     ) -> Union[UNet2DConditionOutput, Tuple]:
         r"""
         The [`UNet2DConditionModel`] forward method.
@@ -1102,6 +1104,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         # 2. pre-process
         sample = self.conv_in(sample)
 
+        # ---------------------------- Encode GLIGEN tokens ---------------------------- #
         # 2.5 GLIGEN position net
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:
             cross_attention_kwargs = cross_attention_kwargs.copy()
@@ -1110,6 +1113,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             gligen_objs = self.position_net(**gligen_args)
             cross_attention_kwargs["gligen"] = {"objs": gligen_objs}
             # cross_attention_kwargs["gligen"] = {"objs": self.position_net(**gligen_args)}
+        # ------------------------------------------------------------------------------ #
 
         # 3. down
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
@@ -1169,6 +1173,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     qkv_dir = qkv_dir,
                     use_scaled_dot_product_attention = use_scaled_dot_product_attention,
                     use_truncated_gsa = use_truncated_gsa,
+                    use_learnable_alpha = use_learnable_alpha,
+                    learnable_alpha = learnable_alpha,
                     **additional_residuals,
                 )                    
             else:
@@ -1203,6 +1209,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     attention_mask=attention_mask,
                     cross_attention_kwargs=cross_attention_kwargs,
                     encoder_attention_mask=encoder_attention_mask,
+                    use_learnable_alpha=use_learnable_alpha,
+                    learnable_alpha=learnable_alpha,
                 )
             else:
                 sample = self.mid_block(sample, emb)
@@ -1244,6 +1252,8 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
+                    use_learnable_alpha=use_learnable_alpha,
+                    learnable_alpha=learnable_alpha,
                 )
             else:
                 sample = upsample_block(

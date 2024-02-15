@@ -734,6 +734,8 @@ class UNetMidBlock2DCrossAttn(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
+        use_learnable_alpha: bool = False,
+        learnable_alpha: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
         hidden_states = self.resnets[0](hidden_states, temb, scale=lora_scale)
@@ -774,6 +776,8 @@ class UNetMidBlock2DCrossAttn(nn.Module):
                     attention_mask=attention_mask,
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
+                    use_learnable_alpha=use_learnable_alpha,
+                    learnable_alpha=learnable_alpha,
                 )[0]
                 hidden_states = resnet(hidden_states, temb, scale=lora_scale)
 
@@ -1147,6 +1151,8 @@ class CrossAttnDownBlock2D(nn.Module):
         use_scaled_dot_product_attention: bool = False,         # ADD: use scaled dot product attention (by Yuseung Lee)
         use_truncated_gsa: bool = False,                        # ADD: use truncated GSA (by Yuseung Lee)
         additional_residuals: Optional[torch.FloatTensor] = None,
+        use_learnable_alpha: bool = False,                      # ADD: use learnable alpha (by Yuseung Lee)
+        learnable_alpha: Optional[torch.Tensor] = None,    # ADD: learnable alpha (by Yuseung Lee)
     ) -> Tuple[torch.FloatTensor, Tuple[torch.FloatTensor, ...]]:
         output_states = ()
 
@@ -1209,6 +1215,8 @@ class CrossAttnDownBlock2D(nn.Module):
                     qkv_dir = qkv_dir,
                     use_scaled_dot_product_attention = use_scaled_dot_product_attention,
                     use_truncated_gsa = use_truncated_gsa,
+                    use_learnable_alpha = use_learnable_alpha,
+                    learnable_alpha = learnable_alpha,
                 )[0]
 
             # apply additional residuals to the output of the last pair of resnet and attention blocks
@@ -2341,6 +2349,8 @@ class CrossAttnUpBlock2D(nn.Module):
         attention_mask: Optional[torch.FloatTensor] = None,
         encoder_attention_mask: Optional[torch.FloatTensor] = None,
         current_iteration: Optional[int] = None,
+        use_learnable_alpha: bool = False,
+        learnable_alpha: Optional[torch.FloatTensor] = None,
     ) -> torch.FloatTensor:
         lora_scale = cross_attention_kwargs.get("scale", 1.0) if cross_attention_kwargs is not None else 1.0
         is_freeu_enabled = (
@@ -2406,6 +2416,8 @@ class CrossAttnUpBlock2D(nn.Module):
                     encoder_attention_mask=encoder_attention_mask,
                     return_dict=False,
                     current_iteration=current_iteration,
+                    use_learnable_alpha=use_learnable_alpha,
+                    learnable_alpha=learnable_alpha,
                 )[0]
 
         if self.upsamplers is not None:

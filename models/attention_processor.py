@@ -1325,6 +1325,44 @@ class AttnProcessor2_0:
         key = key.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
         value = value.view(batch_size, -1, attn.heads, head_dim).transpose(1, 2)
 
+
+        ############################ Modified by Yuseung Lee ############################
+        # from https://pytorch.org/docs/stable/generated/torch.nn.functional.scaled_dot_product_attention.html
+        # Efficient implementation equivalent to the following:
+        
+        SAVE_ATTN_MAPS = False
+        SAVE_MAX_TIMESTEP = 3
+
+        if is_gated_self_attention and SAVE_ATTN_MAPS and current_timestep > -1 and current_timestep <= SAVE_MAX_TIMESTEP:
+
+            SAVE_DIR = "/scratch/yuseung07/attention_map"
+            os.makedirs(SAVE_DIR, exist_ok=True)
+
+            print(f"[INFO] Saving attention maps at iter {current_timestep} to {SAVE_DIR}")
+            
+            assert attention_mask is None
+            assert current_timestep is not None
+
+            L, S = query.size(-2), key.size(-2)
+            scale_factor = 1 / math.sqrt(query.size(-1)) if scale is None else scale
+            attn_bias = torch.zeros(L, S, dtype=query.dtype).to(query.device)
+            
+            attn_weight = query @ key.transpose(-2, -1) * scale_factor
+            attn_weight += attn_bias
+
+            attn_weight = torch.softmax(attn_weight, dim=-1)
+
+            # save attn_weight
+            attn_weight_npy = attn_weight.detach().cpu().numpy()
+            attn_weight_npy = attn_weight_npy[1]
+
+            np.save(
+                join(SAVE_DIR, f"attn_weight_layer_{gsa_layer_name}_iter_{current_timestep}.npy"),
+                attn_weight_npy
+            )
+
+        ############################ Modified by Yuseung Lee ############################
+
         # the output of sdp = (batch, num_heads, seq_len, head_dim)
 
         ############ Substitute Q, K, V (BEGIN) ############
@@ -2007,6 +2045,7 @@ class SlicedAttnAddedKVProcessor:
 
         # linear proj
         hidden_states = attn.to_out[0](hidden_states)
+        
         # dropout
         hidden_states = attn.to_out[1](hidden_states)
 
