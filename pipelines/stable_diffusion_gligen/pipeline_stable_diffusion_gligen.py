@@ -1073,7 +1073,7 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                         learnable_alpha = torch.clamp(learnable_alpha, min=0.0, max=1.0)
                         latents = latents.detach()
                      
-                    torch.cuda.empty_cache()
+                    # torch.cuda.empty_cache()
 
                     # ADD: save x0 predictions
                     # x0_predictions.append(x0_prediction.detach().cpu().numpy())
@@ -1086,6 +1086,8 @@ class StableDiffusionGLIGENPipeline(DiffusionPipeline):
                             step_idx = i // getattr(self.scheduler, "order", 1)
                             callback(step_idx, t, latents)
         # ------------------------- SAMPLING LOOP ------------------------- #
+        
+        torch.cuda.empty_cache()
         
         with torch.no_grad():
             latents = latents.detach()
